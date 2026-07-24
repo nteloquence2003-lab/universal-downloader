@@ -12,7 +12,8 @@ ENV YOUTUBE_DL_SKIP_PYTHON_CHECK=1
 
 RUN npm ci --omit=dev \
   && node node_modules/youtube-dl-exec/scripts/postinstall.js \
-  && node node_modules/ffmpeg-static/install.js
+  && node node_modules/ffmpeg-static/install.js \
+  && ./node_modules/youtube-dl-exec/bin/yt-dlp -U || true
 
 COPY server.js ./
 COPY static ./static

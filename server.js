@@ -1,7 +1,7 @@
 /**
  * 萬用下載器 — 後端（Node）
  * 多數平台：只轉直連（流量不經本站）
- * Bilibili 等：需本站代抓並合併影音（否則常無法下載／無聲音）
+ * Bilibili／需合併影音／雲端 IP 被擋：本站代抓
  */
 
 const fs = require("fs");
@@ -66,14 +66,23 @@ function hostOf(url) {
   }
 }
 
-/** Bilibili 直連常缺 Referer／影音分離，需本站代下 */
-function needsServerDownload(url) {
+function isYouTube(url) {
+  const h = hostOf(url);
+  return h === "youtu.be" || /(^|\.)youtube\.com$/i.test(h) || /(^|\.)youtube-nocookie\.com$/i.test(h);
+}
+
+function isBilibili(url) {
   const h = hostOf(url);
   return (
     h === "b23.tv" ||
     h === "bili2233.cn" ||
     /(^|\.)bilibili\.(com|tv|cn)$/i.test(h)
   );
+}
+
+/** 這些平台在雲端常需本站代抓（影音分離或防爬） */
+function needsServerDownload(url) {
+  return isBilibili(url) || isYouTube(url);
 }
 
 function heightOf(fmt) {
@@ -194,17 +203,40 @@ function uniqueOptions(options, limit = 8) {
   return out;
 }
 
-function ytdlBaseOpts() {
+function refererFor(url) {
+  if (isBilibili(url)) return "https://www.bilibili.com/";
+  if (isYouTube(url)) return "https://www.youtube.com/";
+  try {
+    return new URL(url).origin + "/";
+  } catch {
+    return "https://www.youtube.com/";
+  }
+}
+
+function ytdlBaseOpts(url) {
   const opts = {
     noWarnings: true,
     noCheckCertificates: true,
     noPlaylist: true,
     addHeader: [
       "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "Referer:https://www.bilibili.com/",
+      `Referer:${refererFor(url)}`,
+      "Accept-Language:zh-TW,zh;q=0.9,en;q=0.8",
     ],
   };
   if (ffmpegPath) opts.ffmpegLocation = ffmpegPath;
+
+  // 雲端 IP 常被 YouTube 擋：改用較不易觸發登入牆的客戶端
+  if (isYouTube(url)) {
+    opts.extractorArgs = "youtube:player_client=android,web";
+  }
+
+  // 可選：在 Render 設定環境變數 COOKIES_FILE（Netscape cookies.txt 內容路徑）
+  const cookiesFile = process.env.COOKIES_FILE;
+  if (cookiesFile && fs.existsSync(cookiesFile)) {
+    opts.cookies = cookiesFile;
+  }
+
   return opts;
 }
 
@@ -221,7 +253,7 @@ function formatSelector(media, quality) {
 
 async function extractInfo(url) {
   const info = await youtubeDl(url, {
-    ...ytdlBaseOpts(),
+    ...ytdlBaseOpts(url),
     dumpSingleJson: true,
     skipDownload: true,
     preferFreeFormats: true,
@@ -237,14 +269,27 @@ async function extractInfo(url) {
 
 function friendlyError(err) {
   const raw = String(err?.stderr || err?.message || err);
-  if (/geo-restricted|VPN|proxy/i.test(raw)) {
-    return "此 Bilibili 影片有地區限制，目前網路無法取得。可換公開影片，或稍後用可連線的網路再試。";
+  if (/Sign in to confirm|confirm you.?re not a bot|bot/i.test(raw)) {
+    return "影片平台擋住雲端主機（當成機器人）。請改試公開短影音，或本機 npm start 下載；長期需設定 Cookies。";
   }
-  if (/login|cookie|members only|付费|登錄|登录/i.test(raw)) {
-    return "此影片需要登入或會員才能下載。";
+  if (/geo-restricted|VPN|proxy/i.test(raw)) {
+    return "此影片有地區限制，目前雲端網路無法取得。可換公開影片再試。";
+  }
+  if (/members only|付费|付費|會員專屬/i.test(raw)) {
+    return "此影片需要會員才能下載。";
+  }
+  if (/private video|Private video|非公開|私人/i.test(raw)) {
+    return "這是私人／非公開影片，無法下載。";
   }
   if (/Unsupported URL|No video/i.test(raw)) {
     return "無法辨識此連結，請確認是完整的公開影片網址。";
+  }
+  if (/HTTP Error 403|403: Forbidden/i.test(raw)) {
+    return "來源拒絕存取（403）。可能被防爬或連結失效，請換一支公開影片試試。";
+  }
+  // 避免把「Sign in…」以外的一般錯誤誤判成會員牆
+  if (/\bcookies?\b.*(?:required|needed)|login required|請先登入/i.test(raw)) {
+    return "此影片需要登入才能下載。";
   }
   return raw.slice(0, 400);
 }
@@ -285,12 +330,11 @@ app.post("/api/resolve", async (req, res) => {
     const url = normalizeUrl(req.body?.url);
     const relay = needsServerDownload(url);
 
-    // Bilibili：直接給本站代下（影音合併），避免直連失敗／無聲音
     if (relay) {
-      let title = "Bilibili 影片";
+      let title = isYouTube(url) ? "YouTube 影片" : "影片";
       let thumbnail = null;
       let duration = null;
-      let extractor = "BiliBili";
+      let extractor = isYouTube(url) ? "youtube" : "unknown";
       try {
         const info = await extractInfo(url);
         title = info.title || title;
@@ -298,8 +342,13 @@ app.post("/api/resolve", async (req, res) => {
         duration = info.duration ?? null;
         extractor = info.extractor_key || info.extractor || extractor;
       } catch (previewErr) {
-        // 仍提供下載入口；真正失敗會在 /api/download 顯示
-        console.warn("bilibili preview:", friendlyError(previewErr));
+        // 預覽失敗仍嘗試給代下入口；真正錯誤在下載時或下面直接回傳
+        const msg = friendlyError(previewErr);
+        // YouTube 預覽失敗時多數也無法代下，直接回清楚錯誤
+        if (isYouTube(url)) {
+          return res.status(400).json({ detail: `解析失敗：${msg}` });
+        }
+        console.warn("preview:", msg);
       }
 
       return res.json({
@@ -319,7 +368,9 @@ app.post("/api/resolve", async (req, res) => {
             media === "audio" ? "下載聲音（本站代抓）" : "下載影片含聲音（本站代抓）"
           ),
         ],
-        note: "Bilibili 影音通常分開，且直連會被擋。此平台改由本站代抓並合併後給你下載。",
+        note: isBilibili(url)
+          ? "Bilibili 影音通常分開，且直連會被擋。此平台改由本站代抓並合併後給你下載。"
+          : "此平台在雲端改由本站代抓，較穩定。",
       });
     }
 
@@ -343,7 +394,6 @@ app.post("/api/resolve", async (req, res) => {
       options = pickVideoFormats(formats, quality);
     }
 
-    // 沒有「畫面+聲音」合併檔時，改走本站代下
     const usable = options.filter((o) => o.has_audio !== false);
     if (!usable.length) {
       return res.json({
@@ -398,7 +448,7 @@ app.get("/api/download", async (req, res) => {
     const outTemplate = path.join(workDir, "file.%(ext)s");
 
     await youtubeDl(url, {
-      ...ytdlBaseOpts(),
+      ...ytdlBaseOpts(url),
       format: formatSelector(media, quality),
       output: outTemplate,
       mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
@@ -411,7 +461,7 @@ app.get("/api/download", async (req, res) => {
     }
     const filePath = path.join(workDir, files[0]);
     const ext = path.extname(files[0]).replace(".", "") || (media === "audio" ? "m4a" : "mp4");
-    const downloadName = `bilibili_${Date.now()}.${ext}`;
+    const downloadName = `download_${Date.now()}.${ext}`;
 
     res.download(filePath, downloadName, (err) => {
       try {
@@ -432,7 +482,7 @@ app.get("/api/download", async (req, res) => {
       }
     }
     if (!res.headersSent) {
-      res.status(400).json({ detail: `Bilibili 下載失敗：${friendlyError(err)}` });
+      res.status(400).json({ detail: `下載失敗：${friendlyError(err)}` });
     }
   }
 });

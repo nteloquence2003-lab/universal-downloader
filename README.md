@@ -4,12 +4,20 @@
 
 ## 本機啟動（建議）
 
+**最簡單：** 雙擊 `啟動下載器.bat`  
+會自動 `npm start` 並打開瀏覽器。
+
+或手動：
+
 ```bash
 npm install
 npm start
 ```
 
-開啟：http://127.0.0.1:8787
+本機啟動時會自動開啟：http://127.0.0.1:8787  
+（雲端／Docker 不會自動開瀏覽器）
+
+若不要自動開網頁：`set OPEN_BROWSER=0` 再執行 `npm start`。
 
 ## YouTube 自動改道
 

@@ -14,6 +14,7 @@
   const urlInput = document.getElementById("url");
 
   const mediaInputs = form.querySelectorAll('input[name="media"]');
+  let busy = false;
 
   function setStatus(message, isError = false) {
     statusEl.textContent = message || "";
@@ -52,9 +53,14 @@
   });
   syncQualityVisibility();
 
+  // 貼上後自動清空白；若是完整網址可直接連動一鍵下載
   urlInput.addEventListener("paste", () => {
     setTimeout(() => {
       urlInput.value = urlInput.value.trim();
+      const v = urlInput.value;
+      if (/^https?:\/\/\S+/i.test(v) && !busy) {
+        form.requestSubmit();
+      }
     }, 0);
   });
 
@@ -79,7 +85,10 @@
     }
 
     const options = data.options || [];
-    const best = options[0];
+    const best =
+      options.find((o) => o.has_audio !== false && o.via !== "server") ||
+      options.find((o) => o.via === "server") ||
+      options[0];
 
     if (best) {
       primaryDownload.hidden = false;
@@ -110,7 +119,8 @@
     optionsEl.innerHTML = "";
     if (options.length > 1) {
       moreWrap.hidden = false;
-      options.slice(1).forEach((opt, index) => {
+      options.forEach((opt, index) => {
+        if (best && opt.url === best.url) return;
         const li = document.createElement("li");
         const info = document.createElement("div");
         const label = document.createElement("span");
@@ -139,20 +149,37 @@
         li.append(info, a);
         optionsEl.append(li);
       });
+      if (!optionsEl.children.length) moreWrap.hidden = true;
     } else {
       moreWrap.hidden = true;
     }
 
     noteEl.textContent =
-      data.note || "本站只轉換連結；下載直連影片來源，流量不經過本站。";
+      data.note || "貼上網址後會自動解析並開始下載。";
     resultEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
-  primaryDownload.addEventListener("click", async (event) => {
-    if (primaryDownload.dataset.via !== "server") return;
-    event.preventDefault();
+  async function startPrimaryDownload() {
     const href = primaryDownload.getAttribute("href");
-    if (!href) return;
+    if (!href || href === "#" || primaryDownload.hidden) {
+      throw new Error("沒有可用的下載連結");
+    }
+
+    const via = primaryDownload.dataset.via || "direct";
+    const filename = primaryDownload.dataset.filename || "download.mp4";
+
+    if (via !== "server") {
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = filename;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setStatus("已開始下載到你的裝置。");
+      return;
+    }
 
     setStatus("正在下載中，請稍候（可能要 30 秒以上）…");
     primaryDownload.setAttribute("aria-disabled", "true");
@@ -174,22 +201,38 @@
       const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = objectUrl;
-      a.download = primaryDownload.dataset.filename || "download.mp4";
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(objectUrl);
       setStatus("已開始下載到你的裝置。");
-    } catch (err) {
-      setStatus(err.message || "下載失敗", true);
     } finally {
       primaryDownload.textContent = oldText;
       primaryDownload.removeAttribute("aria-disabled");
+    }
+  }
+
+  primaryDownload.addEventListener("click", async (event) => {
+    if (primaryDownload.dataset.via !== "server") return;
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    submitBtn.disabled = true;
+    try {
+      await startPrimaryDownload();
+    } catch (err) {
+      setStatus(err.message || "下載失敗", true);
+    } finally {
+      busy = false;
+      submitBtn.disabled = false;
     }
   });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (busy) return;
+
     const url = urlInput.value.trim();
     const media = form.querySelector('input[name="media"]:checked')?.value || "video";
     const quality = form.querySelector('input[name="quality"]:checked')?.value || "best";
@@ -199,13 +242,14 @@
       return;
     }
 
+    busy = true;
     resultEl.hidden = true;
     optionsEl.innerHTML = "";
     primaryDownload.hidden = true;
     moreWrap.hidden = true;
-    setStatus("正在幫你轉換下載連結…");
+    setStatus("正在解析並準備下載…");
     submitBtn.disabled = true;
-    submitBtn.textContent = "轉換中…";
+    submitBtn.textContent = "處理中…";
 
     try {
       const res = await fetch("/api/resolve", {
@@ -225,10 +269,12 @@
       }
 
       renderResult(payload);
-      setStatus("轉換成功！按下面大按鈕就能下載。");
+      setStatus("解析完成，正在自動開始下載…");
+      await startPrimaryDownload();
     } catch (err) {
       setStatus(err.message || "發生錯誤，請稍後再試", true);
     } finally {
+      busy = false;
       submitBtn.disabled = false;
       submitBtn.textContent = "一鍵下載";
     }

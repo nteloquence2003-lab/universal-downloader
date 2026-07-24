@@ -1146,6 +1146,41 @@ app.get("/", (_req, res) => {
   res.sendFile(path.join(STATIC, "index.html"));
 });
 
+function shouldOpenBrowser() {
+  if (process.env.OPEN_BROWSER === "0") return false;
+  if (process.env.OPEN_BROWSER === "1") return true;
+  // 雲端／Docker 不要開瀏覽器
+  if (process.env.RENDER || process.env.K_SERVICE || process.env.RAILWAY_ENVIRONMENT) return false;
+  try {
+    if (fs.existsSync("/.dockerenv")) return false;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+function openBrowser(url) {
+  const { exec } = require("child_process");
+  if (process.platform === "win32") {
+    exec(`cmd /c start "" "${url}"`);
+  } else if (process.platform === "darwin") {
+    exec(`open "${url}"`);
+  } else {
+    exec(`xdg-open "${url}"`);
+  }
+}
+
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`萬用下載器 → http://127.0.0.1:${PORT}`);
+  const localUrl = `http://127.0.0.1:${PORT}`;
+  console.log(`萬用下載器 → ${localUrl}`);
+  if (shouldOpenBrowser()) {
+    setTimeout(() => {
+      try {
+        openBrowser(localUrl);
+        console.log("已自動開啟瀏覽器");
+      } catch (err) {
+        console.warn("無法自動開啟瀏覽器：", err.message || err);
+      }
+    }, 400);
+  }
 });

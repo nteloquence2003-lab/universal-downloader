@@ -37,24 +37,32 @@
         <li><span>3</span>存到手機／電腦</li>
       </ol>
       <p class="intro__note">
-        貼上連結會自動連動一鍵下載；本機使用較完整。
+        YouTube 請用下方專用入口；其他平台可貼網址一鍵下載。
       </p>
     </section>
 
     <section class="box" aria-labelledby="form-title">
       <h2 id="form-title" class="box__title">開始下載</h2>
-      <p class="box__warn" id="cloud-warn" hidden>
-        若下載失敗，可改在電腦執行 <code>npm start</code> 使用本機下載。
-      </p>
+
+      <a
+        class="btn-yt"
+        id="yt-savefrom"
+        href="https://zh.savefrom.net/303sC/"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        下載 YouTube 請點選這裡
+      </a>
+      <p class="yt-hint">會跳到 SaveFrom 幫你下載 YouTube</p>
 
       <form id="resolve-form" autocomplete="off">
-        <label class="field-label" for="url">影片網址</label>
+        <label class="field-label" for="url">其他平台影片網址</label>
         <textarea
           id="url"
           name="url"
           rows="3"
           inputmode="url"
-          placeholder="在這裡貼上連結，例如 YouTube、TikTok、Bilibili…"
+          placeholder="TikTok、Bilibili、Facebook…（YouTube 請點上方按鈕）"
           required
         ></textarea>
 
@@ -125,7 +133,7 @@
     <section class="support">
       <p class="support__label">平台說明</p>
       <p class="support__list">
-        YouTube · Facebook · TikTok · 抖音 · Bilibili · 小紅書 · Instagram · X · Vimeo
+        YouTube（SaveFrom）· Facebook · TikTok · 抖音 · Bilibili · 小紅書 · Instagram · X · Vimeo
       </p>
       <p class="support__list">本機：較完整可用　｜　線上免費雲端：常被平台封鎖 IP</p>
     </section>

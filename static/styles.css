@@ -300,6 +300,44 @@ textarea:focus {
   transition: filter 0.15s, transform 0.15s, opacity 0.15s;
 }
 
+.btn-yt {
+  appearance: none;
+  width: 100%;
+  border: 0;
+  border-radius: 16px;
+  padding: 1.2rem 1.25rem;
+  margin: 0 0 0.35rem;
+  font: inherit;
+  font-size: clamp(1.2rem, 4vw, 1.4rem);
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: linear-gradient(180deg, #e11d48, #be123c);
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 28px rgba(190, 18, 60, 0.28);
+  transition: filter 0.15s, transform 0.15s;
+}
+
+.btn-yt:hover {
+  filter: brightness(1.06);
+}
+
+.btn-yt:active {
+  transform: scale(0.99);
+}
+
+.yt-hint {
+  margin: 0 0 1.25rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
 .btn-main:hover:not(:disabled) {
   filter: brightness(1.05);
 }

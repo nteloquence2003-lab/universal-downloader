@@ -16,6 +16,21 @@
   const mediaInputs = form.querySelectorAll('input[name="media"]');
   let busy = false;
 
+  const YT_SAVEFROM = "https://zh.savefrom.net/303sC/";
+
+  function isYouTubeUrl(raw) {
+    try {
+      const h = new URL(String(raw || "").trim()).hostname.replace(/^www\./i, "").toLowerCase();
+      return h === "youtu.be" || /(^|\.)youtube\.com$/i.test(h) || /(^|\.)youtube-nocookie\.com$/i.test(h);
+    } catch {
+      return /youtube\.com|youtu\.be/i.test(String(raw || ""));
+    }
+  }
+
+  function goYouTubeSaveFrom() {
+    window.location.href = YT_SAVEFROM;
+  }
+
   function setStatus(message, isError = false) {
     statusEl.textContent = message || "";
     statusEl.classList.toggle("is-error", Boolean(isError && message));
@@ -53,12 +68,18 @@
   });
   syncQualityVisibility();
 
-  // 貼上後自動清空白；若是完整網址可直接連動一鍵下載
+  // 貼上 YouTube → 直接跳 SaveFrom；其他網址才走本站一鍵下載
   urlInput.addEventListener("paste", () => {
     setTimeout(() => {
       urlInput.value = urlInput.value.trim();
       const v = urlInput.value;
-      if (/^https?:\/\/\S+/i.test(v) && !busy) {
+      if (!v || busy) return;
+      if (isYouTubeUrl(v)) {
+        setStatus("偵測到 YouTube，正在跳轉專用下載頁…");
+        goYouTubeSaveFrom();
+        return;
+      }
+      if (/^https?:\/\/\S+/i.test(v)) {
         form.requestSubmit();
       }
     }, 0);
@@ -239,6 +260,12 @@
 
     if (!/^https?:\/\//i.test(url)) {
       setStatus("請貼上完整網址（要有 https:// 開頭）", true);
+      return;
+    }
+
+    if (isYouTubeUrl(url)) {
+      setStatus("YouTube 請用專用入口，正在跳轉…");
+      goYouTubeSaveFrom();
       return;
     }
 

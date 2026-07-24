@@ -85,11 +85,13 @@
     if (best) {
       primaryDownload.hidden = false;
       primaryDownload.href = best.url;
+      primaryDownload.dataset.via = best.via || "direct";
+      primaryDownload.dataset.filename = `${data.filename || "download"}.${best.ext || "mp4"}`;
       if (best.via === "server") {
         primaryDownload.removeAttribute("download");
         primaryDownload.removeAttribute("target");
       } else {
-        primaryDownload.download = `${data.filename || "download"}.${best.ext || "mp4"}`;
+        primaryDownload.download = primaryDownload.dataset.filename;
         primaryDownload.target = "_blank";
         primaryDownload.rel = "noopener noreferrer";
       }
@@ -103,6 +105,7 @@
             : "立刻下載影片";
     } else {
       primaryDownload.hidden = true;
+      delete primaryDownload.dataset.via;
     }
 
     optionsEl.innerHTML = "";
@@ -145,6 +148,46 @@
       data.note || "本站只轉換連結；下載直連影片來源，流量不經過本站。";
     resultEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
+
+  primaryDownload.addEventListener("click", async (event) => {
+    if (primaryDownload.dataset.via !== "server") return;
+    event.preventDefault();
+    const href = primaryDownload.getAttribute("href");
+    if (!href) return;
+
+    setStatus("正在下載中，請稍候（可能要 30 秒以上）…");
+    primaryDownload.setAttribute("aria-disabled", "true");
+    const oldText = primaryDownload.textContent;
+    primaryDownload.textContent = "下載中…";
+
+    try {
+      const res = await fetch(href);
+      const type = res.headers.get("content-type") || "";
+      if (!res.ok) {
+        const payload = type.includes("json") ? await res.json().catch(() => ({})) : {};
+        throw new Error(payload.detail || `下載失敗（${res.status}）`);
+      }
+      if (type.includes("json")) {
+        const payload = await res.json();
+        throw new Error(payload.detail || "下載失敗");
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = primaryDownload.dataset.filename || "download.mp4";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+      setStatus("已開始下載到你的裝置。");
+    } catch (err) {
+      setStatus(err.message || "下載失敗", true);
+    } finally {
+      primaryDownload.textContent = oldText;
+      primaryDownload.removeAttribute("aria-disabled");
+    }
+  });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();

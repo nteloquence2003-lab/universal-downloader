@@ -17,15 +17,21 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-24-yt2";
+const APP_VERSION = "2026-07-24-yt3";
 
 let youtubeClientPromise = null;
 function getYouTubeClient() {
   if (!youtubeClientPromise) {
-    youtubeClientPromise = Innertube.create({
+    const opts = {
       cache: new UniversalCache(false),
       retrieve_player: true,
-    });
+      generate_session_locally: true,
+    };
+    // 可在 Render → Environment 設定 YT_COOKIE（瀏覽器 Cookie 字串）
+    if (process.env.YT_COOKIE) {
+      opts.cookie = process.env.YT_COOKIE;
+    }
+    youtubeClientPromise = Innertube.create(opts);
   }
   return youtubeClientPromise;
 }
@@ -308,7 +314,7 @@ async function downloadYouTubeToFile(url, media, quality, outPath) {
   if (!id) throw new Error("無法辨識 YouTube 影片 ID");
   const yt = await getYouTubeClient();
   const q = mapQualityToYoutubei(quality);
-  const clients = ["ANDROID", "IOS", "TV", "WEB"];
+  const clients = ["ANDROID", "IOS", "TV_EMBEDDED", "TV", "MWEB", "WEB"];
   let lastErr = null;
 
   for (const client of clients) {
@@ -324,7 +330,22 @@ async function downloadYouTubeToFile(url, media, quality, outPath) {
         stream.on("error", reject);
         ws.on("error", reject);
         ws.on("finish", resolve);
-        stream.pipe(ws);
+        if (typeof stream.pipe === "function") {
+          stream.pipe(ws);
+        } else {
+          (async () => {
+            try {
+              for await (const chunk of stream) {
+                if (!ws.write(Buffer.from(chunk))) {
+                  await new Promise((r) => ws.once("drain", r));
+                }
+              }
+              ws.end();
+            } catch (e) {
+              reject(e);
+            }
+          })();
+        }
       });
       const size = fs.statSync(outPath).size;
       if (size < 1024) throw new Error("下載檔案過小，可能失敗");
@@ -337,6 +358,34 @@ async function downloadYouTubeToFile(url, media, quality, outPath) {
         /* ignore */
       }
     }
+  }
+
+  try {
+    const outTemplate = outPath.replace(/\.[^.]+$/, ".%(ext)s");
+    await youtubeDl(url, {
+      ...ytdlBaseOpts(url),
+      format: formatSelector(media, quality),
+      output: outTemplate,
+      mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
+      restrictFilenames: true,
+      extractorArgs: "youtube:player_client=android,web",
+    });
+    const dir = path.dirname(outPath);
+    const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
+    if (files.length) {
+      const found = path.join(dir, files[0]);
+      if (found !== outPath) fs.renameSync(found, outPath);
+      if (fs.statSync(outPath).size >= 1024) return;
+    }
+  } catch (err) {
+    lastErr = err;
+  }
+
+  const raw = String(lastErr?.message || lastErr || "");
+  if (/sign in|bot|login|cookie/i.test(raw)) {
+    throw new Error(
+      "YouTube 擋住雲端主機（防機器人）。請改用本機 npm start，或到 Render → Environment 設定 YT_COOKIE 後再部署。"
+    );
   }
   throw lastErr || new Error("YouTube 下載失敗");
 }
@@ -362,8 +411,11 @@ async function extractInfo(url) {
 
 function friendlyError(err) {
   const raw = String(err?.stderr || err?.message || err);
-  if (/Sign in to confirm|confirm you.?re not a bot|bot/i.test(raw)) {
-    return "影片平台擋住雲端主機（當成機器人）。請改試公開短影音，或本機 npm start 下載；長期需設定 Cookies。";
+  if (/YouTube 擋住雲端主機/i.test(raw)) {
+    return raw;
+  }
+  if (/Sign in to confirm|confirm you.?re not a bot|not a bot|bot check/i.test(raw)) {
+    return "YouTube 擋住雲端主機（防機器人）。請改用本機下載，或設定 YT_COOKIE。";
   }
   if (/geo-restricted|VPN|proxy/i.test(raw)) {
     return "此影片有地區限制，目前雲端網路無法取得。可換公開影片再試。";
@@ -378,11 +430,10 @@ function friendlyError(err) {
     return "無法辨識此連結，請確認是完整的公開影片網址。";
   }
   if (/HTTP Error 403|403: Forbidden/i.test(raw)) {
-    return "來源拒絕存取（403）。可能被防爬或連結失效，請換一支公開影片試試。";
+    return "來源拒絕存取（403）。雲端 IP 可能被擋，請換公開短影音或本機下載。";
   }
-  // 避免把「Sign in…」以外的一般錯誤誤判成會員牆
   if (/\bcookies?\b.*(?:required|needed)|login required|請先登入/i.test(raw)) {
-    return "此影片需要登入才能下載。";
+    return "YouTube 要求登入驗證。雲端常被擋：請本機下載，或在 Render 設定 YT_COOKIE。";
   }
   return raw.slice(0, 400);
 }

@@ -9,7 +9,7 @@ const os = require("os");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
-const youtubeDl = require("youtube-dl-exec");
+const ytdlExec = require("youtube-dl-exec");
 const ffmpegPath = require("ffmpeg-static");
 const { Innertube, UniversalCache } = require("youtubei.js");
 
@@ -17,7 +17,33 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-24-yt7";
+const APP_VERSION = "2026-07-24-pot1";
+
+function resolveYoutubeDl() {
+  const candidates = [
+    process.env.YT_DLP_BIN,
+    "/usr/local/bin/yt-dlp",
+    "/usr/bin/yt-dlp",
+  ].filter(Boolean);
+  for (const bin of candidates) {
+    try {
+      if (fs.existsSync(bin)) return ytdlExec.create(bin);
+    } catch {
+      /* ignore */
+    }
+  }
+  return ytdlExec;
+}
+
+const youtubeDl = resolveYoutubeDl();
+
+function isPotEnabled() {
+  return String(process.env.YT_DLP_POT_ENABLED || "1") !== "0";
+}
+
+function potBaseUrl() {
+  return String(process.env.YT_DLP_POT_BASE_URL || "http://127.0.0.1:4416").replace(/\/$/, "");
+}
 
 /** 公開 Piped／Invidious：用別人的出口碰 YouTube，再把直連回給使用者 */
 const PIPED_APIS = String(
@@ -303,7 +329,14 @@ function ytdlBaseOpts(url, proxy = "") {
   if (ffmpegPath) opts.ffmpegLocation = ffmpegPath;
 
   if (isYouTube(url)) {
-    opts.extractorArgs = "youtube:player_client=android,web";
+    // PO Token + 多客戶端輪替（參考 yt-dlp wiki / yt-dlp-rescue）
+    const args = [
+      "youtube:player_client=web,android,ios,tv_embedded;player_skip=webpage",
+    ];
+    if (isPotEnabled()) {
+      args.push(`youtubepot-bgutilhttp:base_url=${potBaseUrl()}`);
+    }
+    opts.extractorArgs = args;
   }
 
   const p = String(proxy || process.env.DOWNLOAD_PROXY || "").trim();
@@ -315,6 +348,22 @@ function ytdlBaseOpts(url, proxy = "") {
   }
 
   return opts;
+}
+
+async function runYtDlpDownload(url, media, quality, outPath, proxy = "") {
+  await youtubeDl(url, {
+    ...ytdlBaseOpts(url, proxy),
+    format: formatSelector(media, quality),
+    output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
+    mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
+    restrictFilenames: true,
+  });
+  const dir = path.dirname(outPath);
+  const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
+  if (!files.length) throw new Error("yt-dlp 完成但找不到檔案");
+  const found = path.join(dir, files[0]);
+  if (found !== outPath) fs.renameSync(found, outPath);
+  if (fs.statSync(outPath).size < 1024) throw new Error("下載檔案過小，可能失敗");
 }
 
 function formatSelector(media, quality) {
@@ -580,29 +629,26 @@ async function downloadYouTubeToFile(url, media, quality, outPath, proxy = "") {
   if (!id) throw new Error("無法辨識 YouTube 影片 ID");
   let lastErr = null;
 
-  // 有代理時優先走 yt-dlp（可真正換出口 IP）
+  // 1) 有代理：yt-dlp
   if (proxy) {
     try {
-      await youtubeDl(url, {
-        ...ytdlBaseOpts(url, proxy),
-        format: formatSelector(media, quality),
-        output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
-        mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
-        restrictFilenames: true,
-      });
-      const dir = path.dirname(outPath);
-      const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
-      if (files.length) {
-        const found = path.join(dir, files[0]);
-        if (found !== outPath) fs.renameSync(found, outPath);
-        if (fs.statSync(outPath).size >= 1024) return;
-      }
+      await runYtDlpDownload(url, media, quality, outPath, proxy);
+      return;
     } catch (err) {
       lastErr = err;
     }
   }
 
-  // 雲端優先：後端自動改道 Piped／Invidious（不碰本機房 YouTube IP）
+  // 2) PO Token + 系統 yt-dlp（GitHub 主流雲端解法）
+  try {
+    await runYtDlpDownload(url, media, quality, outPath, proxy);
+    return;
+  } catch (err) {
+    lastErr = err;
+    console.warn("yt-dlp+POT failed:", err.message || err);
+  }
+
+  // 3) Piped／Invidious 自動改道
   try {
     const front = await resolveYouTubeViaFrontends(id, media, quality);
     const best = (front.options || []).find((o) => o.url && (media === "audio" || o.has_audio !== false));
@@ -614,6 +660,7 @@ async function downloadYouTubeToFile(url, media, quality, outPath, proxy = "") {
     lastErr = err;
   }
 
+  // 4) youtubei.js 客戶端輪替
   const yt = await createYouTubeClient();
   const q = mapQualityToYoutubei(quality);
   const clients = ["ANDROID", "IOS", "TV_EMBEDDED", "TV", "MWEB", "WEB"];
@@ -661,40 +708,20 @@ async function downloadYouTubeToFile(url, media, quality, outPath, proxy = "") {
     }
   }
 
-  if (!proxy) {
-    try {
-      await youtubeDl(url, {
-        ...ytdlBaseOpts(url),
-        format: formatSelector(media, quality),
-        output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
-        mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
-        restrictFilenames: true,
-      });
-      const dir = path.dirname(outPath);
-      const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
-      if (files.length) {
-        const found = path.join(dir, files[0]);
-        if (found !== outPath) fs.renameSync(found, outPath);
-        if (fs.statSync(outPath).size >= 1024) return;
-      }
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-
   const raw = String(lastErr?.message || lastErr || "");
-  if (/Sign in to confirm|not a bot|LOGIN_REQUIRED|blocked|前端鏡像/i.test(raw)) {
+  if (/Sign in to confirm|not a bot|LOGIN_REQUIRED|blocked|前端鏡像|PO Token|bot/i.test(raw)) {
     throw new Error(
       proxy
         ? "即使使用代理仍被擋，請確認是住宅代理且未失效。"
-        : "YouTube 下載失敗（雲端自動改道也無法取得）。請改用本機 npm start。"
+        : "YouTube 下載失敗（PO Token 自動改道仍無法取得）。請改用本機 npm start。"
     );
   }
   throw lastErr || new Error("YouTube 下載失敗");
 }
 
 async function extractInfo(url, proxy = "") {
-  if (isYouTube(url) && !proxy) {
+  // 有 PO Token 時 YouTube 也走 yt-dlp（不再只用 youtubei 基本資訊）
+  if (isYouTube(url) && !proxy && !isPotEnabled()) {
     return extractYouTubeInfo(url);
   }
   const info = await youtubeDl(url, {
@@ -789,6 +816,9 @@ app.get("/api/health", (_req, res) => {
     qualities: QUALITY_PRESETS,
     ffmpeg: Boolean(ffmpegPath),
     youtubeAutoReroute: true,
+    potEnabled: isPotEnabled(),
+    potBaseUrl: potBaseUrl(),
+    ytDlpBin: process.env.YT_DLP_BIN || "bundled",
     pipedApis: PIPED_APIS.length,
     invidiousApis: INVIDIOUS_APIS.length,
   });
@@ -939,9 +969,39 @@ app.post("/api/resolve", async (req, res) => {
       }
     }
 
-    // YouTube 無代理：後端自動改道 Piped／Invidious → 失敗再退 youtubei 代抓
+    // YouTube 無代理：PO Token yt-dlp → Piped／Invidious → 代抓按鈕
     const id = youtubeVideoId(url);
     if (!id) throw new Error("無法辨識 YouTube 影片 ID");
+
+    if (isPotEnabled()) {
+      try {
+        const info = await extractInfo(url, "");
+        return res.json({
+          title: info.title || "YouTube 影片",
+          filename: safeFilename(info.title || "youtube"),
+          thumbnail: info.thumbnail || null,
+          duration: info.duration ?? null,
+          extractor: info.extractor_key || info.extractor || "youtube-pot",
+          webpage_url: info.webpage_url || url,
+          media,
+          quality,
+          options: [
+            buildServerOption(
+              url,
+              media,
+              quality,
+              media === "audio" ? "立刻下載聲音" : "立刻下載影片（含聲音）"
+            ),
+          ],
+          note: "後端已啟用 PO Token，按下方按鈕即可下載。",
+          version: APP_VERSION,
+          usedProxy: false,
+          pot: true,
+        });
+      } catch (potErr) {
+        console.warn("youtube pot resolve:", potErr.message || potErr);
+      }
+    }
 
     try {
       const front = await resolveYouTubeViaFrontends(id, media, quality);

@@ -15,26 +15,25 @@ npm start
 
 線上版不會要求使用者填代理。後端會依序嘗試：
 
-1. **Piped** 公開 API
-2. **Invidious** 公開 API  
-3. youtubei／yt-dlp（本站代抓）
+1. **PO Token**（[bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)）+ yt-dlp
+2. **Piped** 公開 API
+3. **Invidious** 公開 API  
+4. youtubei.js
 
-成功時回傳直連下載網址，流量多半不經本站機房碰 YouTube。
+成功時回傳下載按鈕；技術細節都在後端。
 
-可用環境變數自訂節點（逗號分隔）：
-
-```text
-PIPED_APIS=https://pipedapi.kavin.rocks,https://pipedapi.leptons.xyz
-INVIDIOUS_APIS=https://inv.nadeko.net,https://yewtu.be
-```
-
-可選：站長自己設住宅代理給整站用（使用者不用填）：
+Docker 會同時啟動 PO Token 服務（`:4416`）。環境變數：
 
 ```text
+YT_DLP_POT_ENABLED=1
+YT_DLP_POT_BASE_URL=http://127.0.0.1:4416
+YT_DLP_BIN=/usr/local/bin/yt-dlp
+PIPED_APIS=https://pipedapi.kavin.rocks,...
+INVIDIOUS_APIS=https://inv.nadeko.net,...
 DOWNLOAD_PROXY=http://帳號:密碼@主機:埠
 ```
 
-公開鏡像可能不穩或被限速，這不是「破解 YouTube」，只是換出口詢問。
+PO Token **不保證**一定過 YouTube 機房封鎖；若仍失敗請用本機 `npm start`。
 
 ## GitHub
 

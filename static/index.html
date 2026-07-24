@@ -53,6 +53,27 @@
           required
         ></textarea>
 
+        <details class="unlock" id="yt-unlock">
+          <summary>YouTube 解鎖（線上下載需要時再開）</summary>
+          <p class="unlock__help">
+            YouTube 會擋雲端主機。貼上你瀏覽器的 Cookie 後，這個網站才能代抓。
+            貼一次即可，會存在你自己的瀏覽器裡。
+          </p>
+          <ol class="unlock__steps">
+            <li>用 Chrome 登入 YouTube</li>
+            <li>按 F12 → Application → Cookies → youtube.com</li>
+            <li>複製 SID、HSID、SSID、APISID、SAPISID 等，組成：<code>SID=...; HSID=...;</code></li>
+          </ol>
+          <label class="field-label" for="yt-cookie">YouTube Cookie</label>
+          <textarea
+            id="yt-cookie"
+            name="ytCookie"
+            rows="3"
+            placeholder="SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx;"
+          ></textarea>
+          <button type="button" class="btn-clear" id="clear-cookie">清除已存 Cookie</button>
+        </details>
+
         <div class="choices">
           <fieldset class="choice">
             <legend>要下載什麼？</legend>

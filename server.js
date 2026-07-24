@@ -17,23 +17,24 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-24-yt3";
+const APP_VERSION = "2026-07-24-yt4";
 
-let youtubeClientPromise = null;
-function getYouTubeClient() {
-  if (!youtubeClientPromise) {
-    const opts = {
-      cache: new UniversalCache(false),
-      retrieve_player: true,
-      generate_session_locally: true,
-    };
-    // 可在 Render → Environment 設定 YT_COOKIE（瀏覽器 Cookie 字串）
-    if (process.env.YT_COOKIE) {
-      opts.cookie = process.env.YT_COOKIE;
-    }
-    youtubeClientPromise = Innertube.create(opts);
-  }
-  return youtubeClientPromise;
+function createYouTubeClient(cookie) {
+  const opts = {
+    cache: new UniversalCache(false),
+    retrieve_player: true,
+    generate_session_locally: true,
+  };
+  const c = String(cookie || process.env.YT_COOKIE || "").trim();
+  if (c) opts.cookie = c;
+  return Innertube.create(opts);
+}
+
+function pickRequestCookie(req) {
+  const fromBody = req.body?.ytCookie || req.body?.yt_cookie;
+  const fromQuery = req.query?.ytCookie || req.query?.yt_cookie;
+  const fromHeader = req.get("x-yt-cookie");
+  return String(fromBody || fromQuery || fromHeader || "").trim();
 }
 
 const SUPPORTED_HINTS = [
@@ -293,10 +294,10 @@ function mapQualityToYoutubei(quality) {
   return "best";
 }
 
-async function extractYouTubeInfo(url) {
+async function extractYouTubeInfo(url, cookie) {
   const id = youtubeVideoId(url);
   if (!id) throw new Error("無法辨識 YouTube 影片 ID");
-  const yt = await getYouTubeClient();
+  const yt = await createYouTubeClient(cookie);
   const info = await yt.getBasicInfo(id);
   const basic = info.basic_info || {};
   return {
@@ -309,10 +310,10 @@ async function extractYouTubeInfo(url) {
   };
 }
 
-async function downloadYouTubeToFile(url, media, quality, outPath) {
+async function downloadYouTubeToFile(url, media, quality, outPath, cookie) {
   const id = youtubeVideoId(url);
   if (!id) throw new Error("無法辨識 YouTube 影片 ID");
-  const yt = await getYouTubeClient();
+  const yt = await createYouTubeClient(cookie);
   const q = mapQualityToYoutubei(quality);
   const clients = ["ANDROID", "IOS", "TV_EMBEDDED", "TV", "MWEB", "WEB"];
   let lastErr = null;
@@ -361,15 +362,21 @@ async function downloadYouTubeToFile(url, media, quality, outPath) {
   }
 
   try {
-    const outTemplate = outPath.replace(/\.[^.]+$/, ".%(ext)s");
-    await youtubeDl(url, {
+    const opts = {
       ...ytdlBaseOpts(url),
       format: formatSelector(media, quality),
-      output: outTemplate,
+      output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
       mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
       restrictFilenames: true,
       extractorArgs: "youtube:player_client=android,web",
-    });
+    };
+    if (cookie) {
+      opts.addHeader = [
+        ...(opts.addHeader || []),
+        `Cookie:${cookie}`,
+      ];
+    }
+    await youtubeDl(url, opts);
     const dir = path.dirname(outPath);
     const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
     if (files.length) {
@@ -384,15 +391,17 @@ async function downloadYouTubeToFile(url, media, quality, outPath) {
   const raw = String(lastErr?.message || lastErr || "");
   if (/sign in|bot|login|cookie/i.test(raw)) {
     throw new Error(
-      "YouTube 擋住雲端主機（防機器人）。請改用本機 npm start，或到 Render → Environment 設定 YT_COOKIE 後再部署。"
+      cookie
+        ? "Cookie 可能已過期或無效。請重新從瀏覽器複製 YouTube Cookie 再試。"
+        : "YouTube 擋住雲端主機。請在下方「YouTube 解鎖」貼上 Cookie 後再下載（貼一次，瀏覽器會記住）。"
     );
   }
   throw lastErr || new Error("YouTube 下載失敗");
 }
 
-async function extractInfo(url) {
+async function extractInfo(url, cookie) {
   if (isYouTube(url)) {
-    return extractYouTubeInfo(url);
+    return extractYouTubeInfo(url, cookie);
   }
   const info = await youtubeDl(url, {
     ...ytdlBaseOpts(url),
@@ -411,11 +420,11 @@ async function extractInfo(url) {
 
 function friendlyError(err) {
   const raw = String(err?.stderr || err?.message || err);
-  if (/YouTube 擋住雲端主機/i.test(raw)) {
+  if (/YouTube 擋住雲端主機|請在下方|Cookie 可能已過期/i.test(raw)) {
     return raw;
   }
   if (/Sign in to confirm|confirm you.?re not a bot|not a bot|bot check/i.test(raw)) {
-    return "YouTube 擋住雲端主機（防機器人）。請改用本機下載，或設定 YT_COOKIE。";
+    return "YouTube 擋住雲端主機。請展開「YouTube 解鎖」貼上 Cookie。";
   }
   if (/geo-restricted|VPN|proxy/i.test(raw)) {
     return "此影片有地區限制，目前雲端網路無法取得。可換公開影片再試。";
@@ -473,10 +482,11 @@ app.post("/api/resolve", async (req, res) => {
       ? req.body.quality
       : "best";
     const url = normalizeUrl(req.body?.url);
+    const ytCookie = pickRequestCookie(req);
 
-    // YouTube：改走 youtubei（雲端較不易被當成機器人）
+    // YouTube：youtubei + 可選使用者 Cookie（網頁貼一次即可）
     if (isYouTube(url)) {
-      const info = await extractYouTubeInfo(url);
+      const info = await extractYouTubeInfo(url, ytCookie);
       return res.json({
         title: info.title,
         filename: safeFilename(info.title),
@@ -494,8 +504,11 @@ app.post("/api/resolve", async (req, res) => {
             media === "audio" ? "下載聲音（YouTube 代抓）" : "下載影片含聲音（YouTube 代抓）"
           ),
         ],
-        note: "YouTube 由本站代抓後給你下載（雲端防爬較嚴）。",
+        note: ytCookie
+          ? "已使用你的 Cookie 嘗試下載。"
+          : "YouTube 雲端常被擋。若失敗請展開「YouTube 解鎖」貼上 Cookie（貼一次，瀏覽器會記住）。",
         version: APP_VERSION,
+        needCookie: !ytCookie,
       });
     }
 
@@ -611,13 +624,14 @@ app.get("/api/download", async (req, res) => {
       ? String(req.query.quality)
       : "best";
     const url = normalizeUrl(req.query?.url);
+    const ytCookie = pickRequestCookie(req);
 
     workDir = fs.mkdtempSync(path.join(TMP_ROOT, "job-"));
     const ext = media === "audio" ? "m4a" : "mp4";
     const filePath = path.join(workDir, `file.${ext}`);
 
     if (isYouTube(url)) {
-      await downloadYouTubeToFile(url, media, quality, filePath);
+      await downloadYouTubeToFile(url, media, quality, filePath, ytCookie);
     } else {
       const outTemplate = path.join(workDir, "file.%(ext)s");
       await youtubeDl(url, {

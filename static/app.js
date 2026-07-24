@@ -12,8 +12,35 @@
   const primaryDownload = document.getElementById("primary-download");
   const moreWrap = document.getElementById("more-wrap");
   const urlInput = document.getElementById("url");
+  const ytCookieInput = document.getElementById("yt-cookie");
+  const clearCookieBtn = document.getElementById("clear-cookie");
+  const ytUnlock = document.getElementById("yt-unlock");
+  const COOKIE_KEY = "wanyong_yt_cookie";
 
   const mediaInputs = form.querySelectorAll('input[name="media"]');
+
+  function getYtCookie() {
+    return (ytCookieInput?.value || "").trim();
+  }
+
+  function saveYtCookie(value) {
+    const v = String(value || "").trim();
+    if (v) localStorage.setItem(COOKIE_KEY, v);
+    else localStorage.removeItem(COOKIE_KEY);
+  }
+
+  if (ytCookieInput) {
+    ytCookieInput.value = localStorage.getItem(COOKIE_KEY) || "";
+    ytCookieInput.addEventListener("change", () => saveYtCookie(ytCookieInput.value));
+    ytCookieInput.addEventListener("blur", () => saveYtCookie(ytCookieInput.value));
+  }
+  if (clearCookieBtn) {
+    clearCookieBtn.addEventListener("click", () => {
+      if (ytCookieInput) ytCookieInput.value = "";
+      saveYtCookie("");
+      setStatus("已清除本機儲存的 Cookie。");
+    });
+  }
 
   function setStatus(message, isError = false) {
     statusEl.textContent = message || "";
@@ -161,10 +188,15 @@
     primaryDownload.textContent = "下載中…";
 
     try {
-      const res = await fetch(href);
+      const res = await fetch(href, {
+        headers: getYtCookie() ? { "x-yt-cookie": getYtCookie() } : {},
+      });
       const type = res.headers.get("content-type") || "";
       if (!res.ok) {
         const payload = type.includes("json") ? await res.json().catch(() => ({})) : {};
+        if (/Cookie|解鎖|雲端/i.test(String(payload.detail || ""))) {
+          ytUnlock?.setAttribute("open", "true");
+        }
         throw new Error(payload.detail || `下載失敗（${res.status}）`);
       }
       if (type.includes("json")) {
@@ -209,16 +241,29 @@
     submitBtn.textContent = "轉換中…";
 
     try {
+      saveYtCookie(getYtCookie());
       const res = await fetch("/api/resolve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, media, quality }),
+        body: JSON.stringify({
+          url,
+          media,
+          quality,
+          ytCookie: getYtCookie() || undefined,
+        }),
       });
 
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
         const detail = payload.detail || "轉換失敗，請換一個公開影片連結再試";
+        if (/Cookie|解鎖|雲端/i.test(String(detail))) {
+          ytUnlock?.setAttribute("open", "true");
+        }
         throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+
+      if (payload.needCookie) {
+        ytUnlock?.setAttribute("open", "true");
       }
 
       renderResult(payload);

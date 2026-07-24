@@ -17,24 +17,14 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-24-yt4";
+const APP_VERSION = "2026-07-24-yt5";
 
-function createYouTubeClient(cookie) {
-  const opts = {
+function createYouTubeClient() {
+  return Innertube.create({
     cache: new UniversalCache(false),
     retrieve_player: true,
     generate_session_locally: true,
-  };
-  const c = String(cookie || process.env.YT_COOKIE || "").trim();
-  if (c) opts.cookie = c;
-  return Innertube.create(opts);
-}
-
-function pickRequestCookie(req) {
-  const fromBody = req.body?.ytCookie || req.body?.yt_cookie;
-  const fromQuery = req.query?.ytCookie || req.query?.yt_cookie;
-  const fromHeader = req.get("x-yt-cookie");
-  return String(fromBody || fromQuery || fromHeader || "").trim();
+  });
 }
 
 const SUPPORTED_HINTS = [
@@ -294,10 +284,10 @@ function mapQualityToYoutubei(quality) {
   return "best";
 }
 
-async function extractYouTubeInfo(url, cookie) {
+async function extractYouTubeInfo(url) {
   const id = youtubeVideoId(url);
   if (!id) throw new Error("無法辨識 YouTube 影片 ID");
-  const yt = await createYouTubeClient(cookie);
+  const yt = await createYouTubeClient();
   const info = await yt.getBasicInfo(id);
   const basic = info.basic_info || {};
   return {
@@ -310,10 +300,10 @@ async function extractYouTubeInfo(url, cookie) {
   };
 }
 
-async function downloadYouTubeToFile(url, media, quality, outPath, cookie) {
+async function downloadYouTubeToFile(url, media, quality, outPath) {
   const id = youtubeVideoId(url);
   if (!id) throw new Error("無法辨識 YouTube 影片 ID");
-  const yt = await createYouTubeClient(cookie);
+  const yt = await createYouTubeClient();
   const q = mapQualityToYoutubei(quality);
   const clients = ["ANDROID", "IOS", "TV_EMBEDDED", "TV", "MWEB", "WEB"];
   let lastErr = null;
@@ -362,21 +352,14 @@ async function downloadYouTubeToFile(url, media, quality, outPath, cookie) {
   }
 
   try {
-    const opts = {
+    await youtubeDl(url, {
       ...ytdlBaseOpts(url),
       format: formatSelector(media, quality),
       output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
       mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
       restrictFilenames: true,
       extractorArgs: "youtube:player_client=android,web",
-    };
-    if (cookie) {
-      opts.addHeader = [
-        ...(opts.addHeader || []),
-        `Cookie:${cookie}`,
-      ];
-    }
-    await youtubeDl(url, opts);
+    });
     const dir = path.dirname(outPath);
     const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
     if (files.length) {
@@ -391,17 +374,15 @@ async function downloadYouTubeToFile(url, media, quality, outPath, cookie) {
   const raw = String(lastErr?.message || lastErr || "");
   if (/sign in|bot|login|cookie/i.test(raw)) {
     throw new Error(
-      cookie
-        ? "Cookie 可能已過期或無效。請重新從瀏覽器複製 YouTube Cookie 再試。"
-        : "YouTube 擋住雲端主機。請在下方「YouTube 解鎖」貼上 Cookie 後再下載（貼一次，瀏覽器會記住）。"
+      "YouTube 擋住雲端主機。線上站較難下載 YouTube，請改用本機 npm start，或改試 TikTok／Bilibili 等平台。"
     );
   }
   throw lastErr || new Error("YouTube 下載失敗");
 }
 
-async function extractInfo(url, cookie) {
+async function extractInfo(url) {
   if (isYouTube(url)) {
-    return extractYouTubeInfo(url, cookie);
+    return extractYouTubeInfo(url);
   }
   const info = await youtubeDl(url, {
     ...ytdlBaseOpts(url),
@@ -420,11 +401,11 @@ async function extractInfo(url, cookie) {
 
 function friendlyError(err) {
   const raw = String(err?.stderr || err?.message || err);
-  if (/YouTube 擋住雲端主機|請在下方|Cookie 可能已過期/i.test(raw)) {
+  if (/YouTube 擋住雲端主機/i.test(raw)) {
     return raw;
   }
   if (/Sign in to confirm|confirm you.?re not a bot|not a bot|bot check/i.test(raw)) {
-    return "YouTube 擋住雲端主機。請展開「YouTube 解鎖」貼上 Cookie。";
+    return "YouTube 擋住雲端主機。線上站較難下載 YouTube，請改用本機或改試其他平台。";
   }
   if (/geo-restricted|VPN|proxy/i.test(raw)) {
     return "此影片有地區限制，目前雲端網路無法取得。可換公開影片再試。";
@@ -442,7 +423,7 @@ function friendlyError(err) {
     return "來源拒絕存取（403）。雲端 IP 可能被擋，請換公開短影音或本機下載。";
   }
   if (/\bcookies?\b.*(?:required|needed)|login required|請先登入/i.test(raw)) {
-    return "YouTube 要求登入驗證。雲端常被擋：請本機下載，或在 Render 設定 YT_COOKIE。";
+    return "YouTube 擋住雲端主機。線上站較難下載 YouTube，請改用本機或改試其他平台。";
   }
   return raw.slice(0, 400);
 }
@@ -482,11 +463,10 @@ app.post("/api/resolve", async (req, res) => {
       ? req.body.quality
       : "best";
     const url = normalizeUrl(req.body?.url);
-    const ytCookie = pickRequestCookie(req);
 
-    // YouTube：youtubei + 可選使用者 Cookie（網頁貼一次即可）
+    // YouTube：雲端常被擋，仍盡力代抓；失敗會提示改用本機
     if (isYouTube(url)) {
-      const info = await extractYouTubeInfo(url, ytCookie);
+      const info = await extractYouTubeInfo(url);
       return res.json({
         title: info.title,
         filename: safeFilename(info.title),
@@ -504,11 +484,8 @@ app.post("/api/resolve", async (req, res) => {
             media === "audio" ? "下載聲音（YouTube 代抓）" : "下載影片含聲音（YouTube 代抓）"
           ),
         ],
-        note: ytCookie
-          ? "已使用你的 Cookie 嘗試下載。"
-          : "YouTube 雲端常被擋。若失敗請展開「YouTube 解鎖」貼上 Cookie（貼一次，瀏覽器會記住）。",
+        note: "YouTube 在免費雲端常被擋；若失敗請用本機 npm start，或改試其他平台。",
         version: APP_VERSION,
-        needCookie: !ytCookie,
       });
     }
 
@@ -624,14 +601,13 @@ app.get("/api/download", async (req, res) => {
       ? String(req.query.quality)
       : "best";
     const url = normalizeUrl(req.query?.url);
-    const ytCookie = pickRequestCookie(req);
 
     workDir = fs.mkdtempSync(path.join(TMP_ROOT, "job-"));
     const ext = media === "audio" ? "m4a" : "mp4";
     const filePath = path.join(workDir, `file.${ext}`);
 
     if (isYouTube(url)) {
-      await downloadYouTubeToFile(url, media, quality, filePath, ytCookie);
+      await downloadYouTubeToFile(url, media, quality, filePath);
     } else {
       const outTemplate = path.join(workDir, "file.%(ext)s");
       await youtubeDl(url, {

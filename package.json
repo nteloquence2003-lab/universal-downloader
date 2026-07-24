@@ -2,10 +2,11 @@
   "name": "universal-downloader",
   "version": "1.0.0",
   "private": true,
-  "description": "萬用下載器 — 只轉下載連結，流量直連來源",
+  "description": "AI爆款短影音實戰班 — 貼上網址下載",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "open": "node server.js",
     "dev": "node --watch server.js",
     "postinstall": "node -e \"process.env.YOUTUBE_DL_SKIP_PYTHON_CHECK='1'; require('child_process').execSync('node node_modules/youtube-dl-exec/scripts/postinstall.js',{stdio:'inherit',env:process.env}); try{require('child_process').execSync('node node_modules/ffmpeg-static/install.js',{stdio:'inherit'});}catch(e){}\""
   },

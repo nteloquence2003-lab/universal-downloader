@@ -46,9 +46,10 @@ body {
 }
 
 .brand__name {
-  font-size: clamp(1.6rem, 5vw, 2rem);
+  font-size: clamp(1.35rem, 4.2vw, 1.85rem);
   font-weight: 900;
   letter-spacing: 0.02em;
+  line-height: 1.25;
 }
 
 .brand__hint {

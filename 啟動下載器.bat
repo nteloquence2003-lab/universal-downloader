@@ -19,7 +19,7 @@ if not exist "node_modules\" (
   )
 )
 
-echo 正在啟動萬用下載器…
+echo 正在啟動 AI爆款短影音實戰班…
 echo 瀏覽器會自動開啟 http://127.0.0.1:8787
 echo 關掉這個視窗 = 停止下載器
 echo.

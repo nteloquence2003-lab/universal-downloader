@@ -1,5 +1,5 @@
 /**
- * 萬用下載器 — 後端（Node）
+ * AI爆款短影音實戰班 — 後端（Node）
  * 多數平台：只轉直連（流量不經本站）
  * Bilibili／需合併影音／雲端 IP 被擋：本站代抓
  */
@@ -1172,7 +1172,7 @@ function openBrowser(url) {
 
 app.listen(PORT, "0.0.0.0", () => {
   const localUrl = `http://127.0.0.1:${PORT}`;
-  console.log(`萬用下載器 → ${localUrl}`);
+  console.log(`AI爆款短影音實戰班 → ${localUrl}`);
   if (shouldOpenBrowser()) {
     setTimeout(() => {
       try {

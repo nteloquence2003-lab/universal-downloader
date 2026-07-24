@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="description" content="萬用下載器：貼上網址，一鍵取得下載連結。流量直連來源，不經過本站。" />
+  <title>萬用下載器</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="brand__name">萬用下載器</span>
+      <span class="brand__hint">貼網址 → 下載</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="banner" aria-label="宣傳圖">
+      <img
+        class="banner__img"
+        src="/static/img/banner.png"
+        alt="AI 短影音實戰班"
+        width="1080"
+        height="1350"
+      />
+    </section>
+
+    <section class="intro">
+      <h1 class="intro__title">貼上影片網址<br />立刻下載</h1>
+      <ol class="steps" aria-label="使用步驟">
+        <li><span>1</span>貼上網址</li>
+        <li><span>2</span>按下載</li>
+        <li><span>3</span>存到手機／電腦</li>
+      </ol>
+      <p class="intro__note">本站只幫你轉成下載連結，影片流量不會經過本站。</p>
+    </section>
+
+    <section class="box" aria-labelledby="form-title">
+      <h2 id="form-title" class="box__title">開始下載</h2>
+
+      <form id="resolve-form" autocomplete="off">
+        <label class="field-label" for="url">影片網址</label>
+        <textarea
+          id="url"
+          name="url"
+          rows="3"
+          inputmode="url"
+          placeholder="在這裡貼上連結，例如 YouTube、TikTok、Bilibili…"
+          required
+        ></textarea>
+
+        <div class="choices">
+          <fieldset class="choice">
+            <legend>要下載什麼？</legend>
+            <label class="chip">
+              <input type="radio" name="media" value="video" checked />
+              <span>影片（有畫面＋聲音）</span>
+            </label>
+            <label class="chip">
+              <input type="radio" name="media" value="audio" />
+              <span>只要聲音</span>
+            </label>
+          </fieldset>
+
+          <fieldset class="choice" id="quality-group">
+            <legend>畫質要多清楚？</legend>
+            <label class="chip">
+              <input type="radio" name="quality" value="best" checked />
+              <span>自動最好</span>
+            </label>
+            <label class="chip">
+              <input type="radio" name="quality" value="1080" />
+              <span>1080p</span>
+            </label>
+            <label class="chip">
+              <input type="radio" name="quality" value="720" />
+              <span>720p</span>
+            </label>
+            <label class="chip">
+              <input type="radio" name="quality" value="480" />
+              <span>480p</span>
+            </label>
+          </fieldset>
+        </div>
+
+        <button type="submit" class="btn-main" id="submit-btn">
+          一鍵下載
+        </button>
+      </form>
+
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="result" id="result" hidden>
+      <h2 class="result__heading">可以下載了</h2>
+      <div class="result__meta">
+        <img class="result__thumb" id="thumb" alt="" hidden />
+        <div>
+          <p class="result__title" id="title"></p>
+          <p class="result__sub" id="sub"></p>
+        </div>
+      </div>
+
+      <a class="btn-main btn-main--download" id="primary-download" href="#" target="_blank" rel="noopener noreferrer" hidden>
+        立刻下載這個
+      </a>
+
+      <details class="more" id="more-wrap" hidden>
+        <summary>還要其他畫質／格式？點這裡</summary>
+        <ul class="result__list" id="options"></ul>
+      </details>
+
+      <p class="result__note" id="note"></p>
+    </section>
+
+    <section class="support">
+      <p class="support__label">可用平台（公開內容）</p>
+      <p class="support__list">YouTube · Facebook · TikTok · 抖音 · Bilibili · 小紅書 · Instagram · X · Vimeo</p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>本站只轉換連結；下載直連影片來源，流量不經過本站。</p>
+    <p>僅供下載您有權使用的公開內容。</p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

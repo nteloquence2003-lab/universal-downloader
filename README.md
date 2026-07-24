@@ -1,6 +1,6 @@
 # 萬用下載器
 
-貼上網址取得下載。本機使用較完整；免費雲端（如 Render）常被 YouTube／TikTok／IG 等封鎖機房 IP。
+貼上網址取得下載。本機使用較完整；免費雲端常被平台封鎖機房 IP。
 
 ## 本機啟動（建議）
 
@@ -11,26 +11,30 @@ npm start
 
 開啟：http://127.0.0.1:8787
 
-## 線上版限制
+## YouTube 自動改道
 
-Render 等免費雲端使用機房 IP，各大平台會擋，**線上版可能全部下不了**。  
-這不是網站壞掉，而是平台防爬政策。
+線上版不會要求使用者填代理。後端會依序嘗試：
 
-## 改 IP（代理）
+1. **Piped** 公開 API
+2. **Invidious** 公開 API  
+3. youtubei／yt-dlp（本站代抓）
 
-網頁可展開「改 IP」填住宅代理，例如：
+成功時回傳直連下載網址，流量多半不經本站機房碰 YouTube。
+
+可用環境變數自訂節點（逗號分隔）：
 
 ```text
-http://帳號:密碼@主機:埠
+PIPED_APIS=https://pipedapi.kavin.rocks,https://pipedapi.leptons.xyz
+INVIDIOUS_APIS=https://inv.nadeko.net,https://yewtu.be
 ```
 
-也可在主機環境變數設定：
+可選：站長自己設住宅代理給整站用（使用者不用填）：
 
 ```text
 DOWNLOAD_PROXY=http://帳號:密碼@主機:埠
 ```
 
-免費公開代理通常無效。
+公開鏡像可能不穩或被限速，這不是「破解 YouTube」，只是換出口詢問。
 
 ## GitHub
 

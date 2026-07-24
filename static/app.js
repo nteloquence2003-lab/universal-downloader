@@ -12,34 +12,8 @@
   const primaryDownload = document.getElementById("primary-download");
   const moreWrap = document.getElementById("more-wrap");
   const urlInput = document.getElementById("url");
-  const proxyInput = document.getElementById("proxy");
-  const clearProxyBtn = document.getElementById("clear-proxy");
-  const PROXY_KEY = "wanyong_proxy";
 
   const mediaInputs = form.querySelectorAll('input[name="media"]');
-
-  function getProxy() {
-    return (proxyInput?.value || "").trim();
-  }
-
-  function saveProxy(value) {
-    const v = String(value || "").trim();
-    if (v) localStorage.setItem(PROXY_KEY, v);
-    else localStorage.removeItem(PROXY_KEY);
-  }
-
-  if (proxyInput) {
-    proxyInput.value = localStorage.getItem(PROXY_KEY) || "";
-    proxyInput.addEventListener("change", () => saveProxy(proxyInput.value));
-    proxyInput.addEventListener("blur", () => saveProxy(proxyInput.value));
-  }
-  if (clearProxyBtn) {
-    clearProxyBtn.addEventListener("click", () => {
-      if (proxyInput) proxyInput.value = "";
-      saveProxy("");
-      setStatus("已清除代理設定。");
-    });
-  }
 
   function setStatus(message, isError = false) {
     statusEl.textContent = message || "";
@@ -186,9 +160,7 @@
     primaryDownload.textContent = "下載中…";
 
     try {
-      const headers = {};
-      if (getProxy()) headers["x-download-proxy"] = getProxy();
-      const res = await fetch(href, { headers });
+      const res = await fetch(href);
       const type = res.headers.get("content-type") || "";
       if (!res.ok) {
         const payload = type.includes("json") ? await res.json().catch(() => ({})) : {};
@@ -236,7 +208,6 @@
     submitBtn.textContent = "轉換中…";
 
     try {
-      saveProxy(getProxy());
       const res = await fetch("/api/resolve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -244,7 +215,6 @@
           url,
           media,
           quality,
-          proxy: getProxy() || undefined,
         }),
       });
 
@@ -256,9 +226,11 @@
 
       renderResult(payload);
       setStatus(
-        payload.usedProxy
-          ? "轉換成功（已走代理 IP）！按下面大按鈕下載。"
-          : "轉換成功！按下面大按鈕就能下載。"
+        payload.autoReroute
+          ? "轉換成功（後端已自動改道）！按下面大按鈕下載。"
+          : payload.usedProxy
+            ? "轉換成功（已走代理 IP）！按下面大按鈕下載。"
+            : "轉換成功！按下面大按鈕就能下載。"
       );
     } catch (err) {
       setStatus(err.message || "發生錯誤，請稍後再試", true);

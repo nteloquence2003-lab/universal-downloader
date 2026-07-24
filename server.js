@@ -17,7 +17,37 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-24-proxy1";
+const APP_VERSION = "2026-07-24-yt6";
+
+/** 公開 Piped／Invidious：用別人的出口碰 YouTube，再把直連回給使用者 */
+const PIPED_APIS = String(
+  process.env.PIPED_APIS ||
+    [
+      "https://pipedapi.kavin.rocks",
+      "https://pipedapi.leptons.xyz",
+      "https://pipedapi.nosebs.ru",
+      "https://pipedapi-libre.kavin.rocks",
+      "https://api.piped.private.coffee",
+      "https://pipedapi.darkness.services",
+      "https://pipedapi.reallyaweso.me",
+    ].join(",")
+)
+  .split(",")
+  .map((s) => s.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+
+const INVIDIOUS_APIS = String(
+  process.env.INVIDIOUS_APIS ||
+    [
+      "https://inv.nadeko.net",
+      "https://yewtu.be",
+      "https://invidious.nerdvpn.de",
+      "https://vid.puffyan.us",
+    ].join(",")
+)
+  .split(",")
+  .map((s) => s.trim().replace(/\/$/, ""))
+  .filter(Boolean);
 
 function createYouTubeClient() {
   return Innertube.create({
@@ -314,6 +344,214 @@ function youtubeVideoId(url) {
   return null;
 }
 
+async function fetchJson(url, ms = 12000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: {
+        Accept: "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function heightFromLabel(q) {
+  const m = String(q || "").match(/(\d{3,4})/);
+  return m ? Number(m[1]) : 0;
+}
+
+function pickByQuality(items, quality, getHeight) {
+  if (!items.length) return [];
+  if (quality === "best") {
+    return [...items].sort((a, b) => getHeight(b) - getHeight(a));
+  }
+  const target = Number(quality);
+  return [...items]
+    .filter((x) => {
+      const h = getHeight(x);
+      return !h || h <= target;
+    })
+    .sort((a, b) => getHeight(b) - getHeight(a));
+}
+
+function optionsFromPiped(data, media, quality) {
+  if (media === "audio") {
+    const audios = Array.isArray(data.audioStreams) ? data.audioStreams : [];
+    return audios
+      .filter((s) => s?.url)
+      .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))
+      .slice(0, 6)
+      .map((s, i) => {
+        const ext = String(s.format || "m4a").toLowerCase().includes("webm") ? "webm" : "m4a";
+        const kbps = s.bitrate ? Math.round(Number(s.bitrate) / 1000) : null;
+        return {
+          format_id: `piped-a-${i}`,
+          ext,
+          height: null,
+          has_audio: true,
+          filesize: null,
+          url: s.url,
+          label: kbps ? `${kbps} kbps · ${ext.toUpperCase()}` : `音訊 · ${ext.toUpperCase()}`,
+          via: "direct",
+        };
+      });
+  }
+
+  const videos = (Array.isArray(data.videoStreams) ? data.videoStreams : []).filter((s) => s?.url);
+  // 優先有聲音的（非 videoOnly），使用者才能一鍵下到完整檔
+  const muxed = videos.filter((s) => !s.videoOnly);
+  const pool = muxed.length ? muxed : videos;
+  const ranked = pickByQuality(pool, quality, (s) => heightFromLabel(s.quality || s.qualityLabel));
+
+  return ranked.slice(0, 8).map((s, i) => {
+    const height = heightFromLabel(s.quality || s.qualityLabel) || null;
+    const ext = String(s.format || "mp4").toLowerCase().includes("webm") ? "webm" : "mp4";
+    const hasAudio = !s.videoOnly;
+    return {
+      format_id: `piped-v-${i}`,
+      ext,
+      height,
+      has_audio: hasAudio,
+      filesize: null,
+      url: s.url,
+      label: labelVideo({ format_note: s.quality, format_id: `p${i}`, ext }, height, hasAudio),
+      via: "direct",
+    };
+  });
+}
+
+function optionsFromInvidious(data, media, quality) {
+  if (media === "audio") {
+    const adaptive = Array.isArray(data.adaptiveFormats) ? data.adaptiveFormats : [];
+    return adaptive
+      .filter((f) => f?.url && String(f.type || "").startsWith("audio/"))
+      .sort((a, b) => (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0))
+      .slice(0, 6)
+      .map((f, i) => {
+        const ext = String(f.container || f.type || "m4a").includes("webm") ? "webm" : "m4a";
+        const kbps = f.bitrate ? Math.round(Number(f.bitrate) / 1000) : null;
+        return {
+          format_id: `inv-a-${i}`,
+          ext,
+          height: null,
+          has_audio: true,
+          filesize: null,
+          url: f.url,
+          label: kbps ? `${kbps} kbps · ${ext.toUpperCase()}` : `音訊 · ${ext.toUpperCase()}`,
+          via: "direct",
+        };
+      });
+  }
+
+  const muxed = (Array.isArray(data.formatStreams) ? data.formatStreams : []).filter((f) => f?.url);
+  const ranked = pickByQuality(muxed, quality, (f) => heightFromLabel(f.qualityLabel || f.quality));
+  return ranked.slice(0, 8).map((f, i) => {
+    const height = heightFromLabel(f.qualityLabel || f.quality) || null;
+    const ext = String(f.container || "mp4").toLowerCase().includes("webm") ? "webm" : "mp4";
+    return {
+      format_id: `inv-v-${i}`,
+      ext,
+      height,
+      has_audio: true,
+      filesize: null,
+      url: f.url,
+      label: labelVideo({ format_note: f.qualityLabel, format_id: `i${i}`, ext }, height, true),
+      via: "direct",
+    };
+  });
+}
+
+/** 後端自動換「出口」：詢問 Piped／Invidious，回傳可直連的下載網址 */
+async function resolveYouTubeViaFrontends(id, media, quality) {
+  const errors = [];
+
+  for (const base of PIPED_APIS) {
+    try {
+      const data = await fetchJson(`${base}/streams/${encodeURIComponent(id)}`);
+      const options = optionsFromPiped(data, media, quality);
+      if (!options.length) {
+        errors.push(`${base}: no streams`);
+        continue;
+      }
+      let host = base;
+      try {
+        host = new URL(base).hostname;
+      } catch {
+        /* ignore */
+      }
+      return {
+        title: data.title || "YouTube 影片",
+        thumbnail: data.thumbnailUrl || null,
+        duration: data.duration ?? null,
+        extractor: `piped:${host}`,
+        options,
+        note: "後端已自動改道（Piped）。下載直連鏡像／來源，不必填代理。",
+      };
+    } catch (err) {
+      errors.push(`${base}: ${err.message || err}`);
+    }
+  }
+
+  for (const base of INVIDIOUS_APIS) {
+    try {
+      const data = await fetchJson(`${base}/api/v1/videos/${encodeURIComponent(id)}`);
+      const options = optionsFromInvidious(data, media, quality);
+      if (!options.length) {
+        errors.push(`${base}: no streams`);
+        continue;
+      }
+      let host = base;
+      try {
+        host = new URL(base).hostname;
+      } catch {
+        /* ignore */
+      }
+      return {
+        title: data.title || "YouTube 影片",
+        thumbnail: data.videoThumbnails?.[0]?.url || data.thumbnail || null,
+        duration: data.lengthSeconds ?? null,
+        extractor: `invidious:${host}`,
+        options,
+        note: "後端已自動改道（Invidious）。下載直連來源，不必填代理。",
+      };
+    } catch (err) {
+      errors.push(`${base}: ${err.message || err}`);
+    }
+  }
+
+  throw new Error(`前端鏡像皆失敗：${errors.slice(0, 3).join(" | ")}`);
+}
+
+async function downloadUrlToFile(fileUrl, outPath) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 180000);
+  try {
+    const res = await fetch(fileUrl, {
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        Referer: "https://www.youtube.com/",
+      },
+      redirect: "follow",
+    });
+    if (!res.ok) throw new Error(`串流 HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 1024) throw new Error("下載檔案過小");
+    fs.writeFileSync(outPath, buf);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function mapQualityToYoutubei(quality) {
   if (quality === "1080") return "1080p";
   if (quality === "720") return "720p";
@@ -432,12 +670,24 @@ async function downloadYouTubeToFile(url, media, quality, outPath, proxy = "") {
     }
   }
 
+  // 最後手段：經 Piped／Invidious 取得串流再由本機拉取
+  try {
+    const front = await resolveYouTubeViaFrontends(id, media, quality);
+    const best = (front.options || []).find((o) => o.url);
+    if (best?.url) {
+      await downloadUrlToFile(best.url, outPath);
+      return;
+    }
+  } catch (err) {
+    lastErr = err;
+  }
+
   const raw = String(lastErr?.message || lastErr || "");
-  if (/Sign in to confirm|not a bot|LOGIN_REQUIRED|blocked/i.test(raw)) {
+  if (/Sign in to confirm|not a bot|LOGIN_REQUIRED|blocked|前端鏡像/i.test(raw)) {
     throw new Error(
       proxy
         ? "即使使用代理仍被擋，請確認是住宅代理且未失效。"
-        : "YouTube 擋住雲端主機。請在「改 IP」填入住宅代理，或改用本機 npm start。"
+        : "YouTube 擋住雲端主機，且自動改道也失敗。請改用本機 npm start，或在主機設定 DOWNLOAD_PROXY。"
     );
   }
   throw lastErr || new Error("YouTube 下載失敗");
@@ -538,6 +788,9 @@ app.get("/api/health", (_req, res) => {
     supported: SUPPORTED_HINTS,
     qualities: QUALITY_PRESETS,
     ffmpeg: Boolean(ffmpegPath),
+    youtubeAutoReroute: true,
+    pipedApis: PIPED_APIS.length,
+    invidiousApis: INVIDIOUS_APIS.length,
   });
 });
 
@@ -615,7 +868,7 @@ app.post("/api/resolve", async (req, res) => {
           ],
           note: proxy
             ? "已使用你提供的代理 IP。"
-            : "若失敗，請在「改 IP」填住宅代理，或改用本機。",
+            : "若失敗，請改用本機 npm start，或請站長設定 DOWNLOAD_PROXY。",
           version: APP_VERSION,
           usedProxy: Boolean(proxy),
         });
@@ -686,7 +939,36 @@ app.post("/api/resolve", async (req, res) => {
       }
     }
 
-    // YouTube 無代理：youtubei 盡力而為
+    // YouTube 無代理：後端自動改道 Piped／Invidious → 失敗再退 youtubei 代抓
+    const id = youtubeVideoId(url);
+    if (!id) throw new Error("無法辨識 YouTube 影片 ID");
+
+    try {
+      const front = await resolveYouTubeViaFrontends(id, media, quality);
+      const usable = uniqueOptions(
+        (front.options || []).filter((o) => media === "audio" || o.has_audio !== false)
+      );
+      if (usable.length) {
+        return res.json({
+          title: front.title,
+          filename: safeFilename(front.title),
+          thumbnail: front.thumbnail,
+          duration: front.duration,
+          extractor: front.extractor,
+          webpage_url: url,
+          media,
+          quality,
+          options: usable,
+          note: front.note,
+          version: APP_VERSION,
+          usedProxy: false,
+          autoReroute: true,
+        });
+      }
+    } catch (frontErr) {
+      console.warn("youtube auto-reroute:", frontErr.message || frontErr);
+    }
+
     const info = await extractYouTubeInfo(url);
     return res.json({
       title: info.title,
@@ -705,7 +987,7 @@ app.post("/api/resolve", async (req, res) => {
           media === "audio" ? "下載聲音（YouTube 代抓）" : "下載影片含聲音（YouTube 代抓）"
         ),
       ],
-      note: "未填代理時，YouTube 在免費雲端常失敗。請填「改 IP」住宅代理，或本機下載。",
+      note: "自動改道暫時不可用，改由本站代抓。若仍失敗請用本機 npm start。",
       version: APP_VERSION,
       usedProxy: false,
     });

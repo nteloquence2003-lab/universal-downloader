@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "postinstall": "node -e \"process.env.YOUTUBE_DL_SKIP_PYTHON_CHECK='1'; require('child_process').execSync('node node_modules/youtube-dl-exec/scripts/postinstall.js',{stdio:'inherit',env:process.env}); try{require('child_process').execSync('node node_modules/ffmpeg-static/install.js',{stdio:'inherit'});}catch(e){}\""
   },
   "engines": {
     "node": ">=18"

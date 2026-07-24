@@ -36,11 +36,17 @@
         <li><span>2</span>按下載</li>
         <li><span>3</span>存到手機／電腦</li>
       </ol>
-      <p class="intro__note">本站只幫你轉成下載連結，影片流量不會經過本站。</p>
+      <p class="intro__note">
+        本站可轉下載連結。注意：放在免費雲端時，YouTube／TikTok／IG 等常會封鎖機房 IP，
+        <strong>線上版可能全部失敗</strong>；完整功能請用本機執行。
+      </p>
     </section>
 
     <section class="box" aria-labelledby="form-title">
       <h2 id="form-title" class="box__title">開始下載</h2>
+      <p class="box__warn" id="cloud-warn">
+        線上版限制：各大平台會擋雲端主機。若一直失敗，請在電腦執行 <code>npm start</code> 用本機下載。
+      </p>
 
       <form id="resolve-form" autocomplete="off">
         <label class="field-label" for="url">影片網址</label>
@@ -52,6 +58,24 @@
           placeholder="在這裡貼上連結，例如 YouTube、TikTok、Bilibili…"
           required
         ></textarea>
+
+        <details class="proxy-box" id="proxy-box">
+          <summary>改 IP（填代理）</summary>
+          <p class="proxy-box__help">
+            免費公開代理多半沒用。請填<strong>住宅代理</strong>，下載才會換成別的 IP。
+            格式：<code>http://帳號:密碼@主機:埠</code>
+          </p>
+          <label class="field-label" for="proxy">代理位址</label>
+          <input
+            id="proxy"
+            name="proxy"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="http://user:pass@1.2.3.4:8080"
+          />
+          <button type="button" class="btn-clear" id="clear-proxy">清除代理</button>
+        </details>
 
         <div class="choices">
           <fieldset class="choice">
@@ -118,8 +142,11 @@
     </section>
 
     <section class="support">
-      <p class="support__label">可用平台（公開內容）</p>
-      <p class="support__list">YouTube · Facebook · TikTok · 抖音 · Bilibili · 小紅書 · Instagram · X · Vimeo</p>
+      <p class="support__label">平台說明</p>
+      <p class="support__list">
+        YouTube · Facebook · TikTok · 抖音 · Bilibili · 小紅書 · Instagram · X · Vimeo
+      </p>
+      <p class="support__list">本機：較完整可用　｜　線上免費雲端：常被平台封鎖 IP</p>
     </section>
   </main>
 

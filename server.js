@@ -17,7 +17,7 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-24-yt5";
+const APP_VERSION = "2026-07-24-proxy1";
 
 function createYouTubeClient() {
   return Innertube.create({
@@ -25,6 +25,42 @@ function createYouTubeClient() {
     retrieve_player: true,
     generate_session_locally: true,
   });
+}
+
+function normalizeProxy(raw) {
+  const p = String(raw || "").trim();
+  if (!p) return "";
+  if (!/^(https?|socks5h?|socks4a?):\/\//i.test(p)) {
+    throw new Error("代理格式錯誤。請用：http://帳號:密碼@主機:埠 或 socks5://主機:埠");
+  }
+  // 禁止明顯內網／本機，降低被拿去掃內網風險
+  try {
+    const u = new URL(p);
+    const host = (u.hostname || "").toLowerCase();
+    if (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host.endsWith(".local") ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+    ) {
+      throw new Error("不可使用本機或內網代理位址");
+    }
+  } catch (e) {
+    if (/代理格式|不可使用/.test(e.message)) throw e;
+    throw new Error("代理網址無法解析，請檢查格式");
+  }
+  return p;
+}
+
+function pickRequestProxy(req) {
+  const fromBody = req.body?.proxy;
+  const fromQuery = req.query?.proxy;
+  const fromHeader = req.get("x-download-proxy");
+  const fromEnv = process.env.DOWNLOAD_PROXY;
+  return normalizeProxy(fromBody || fromQuery || fromHeader || fromEnv || "");
 }
 
 const SUPPORTED_HINTS = [
@@ -223,7 +259,7 @@ function refererFor(url) {
   }
 }
 
-function ytdlBaseOpts(url) {
+function ytdlBaseOpts(url, proxy = "") {
   const opts = {
     noWarnings: true,
     noCheckCertificates: true,
@@ -236,12 +272,13 @@ function ytdlBaseOpts(url) {
   };
   if (ffmpegPath) opts.ffmpegLocation = ffmpegPath;
 
-  // 雲端 IP 常被 YouTube 擋：改用較不易觸發登入牆的客戶端
   if (isYouTube(url)) {
     opts.extractorArgs = "youtube:player_client=android,web";
   }
 
-  // 可選：在 Render 設定環境變數 COOKIES_FILE（Netscape cookies.txt 內容路徑）
+  const p = String(proxy || process.env.DOWNLOAD_PROXY || "").trim();
+  if (p) opts.proxy = p;
+
   const cookiesFile = process.env.COOKIES_FILE;
   if (cookiesFile && fs.existsSync(cookiesFile)) {
     opts.cookies = cookiesFile;
@@ -300,13 +337,36 @@ async function extractYouTubeInfo(url) {
   };
 }
 
-async function downloadYouTubeToFile(url, media, quality, outPath) {
+async function downloadYouTubeToFile(url, media, quality, outPath, proxy = "") {
   const id = youtubeVideoId(url);
   if (!id) throw new Error("無法辨識 YouTube 影片 ID");
+  let lastErr = null;
+
+  // 有代理時優先走 yt-dlp（可真正換出口 IP）
+  if (proxy) {
+    try {
+      await youtubeDl(url, {
+        ...ytdlBaseOpts(url, proxy),
+        format: formatSelector(media, quality),
+        output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
+        mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
+        restrictFilenames: true,
+      });
+      const dir = path.dirname(outPath);
+      const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
+      if (files.length) {
+        const found = path.join(dir, files[0]);
+        if (found !== outPath) fs.renameSync(found, outPath);
+        if (fs.statSync(outPath).size >= 1024) return;
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
   const yt = await createYouTubeClient();
   const q = mapQualityToYoutubei(quality);
   const clients = ["ANDROID", "IOS", "TV_EMBEDDED", "TV", "MWEB", "WEB"];
-  let lastErr = null;
 
   for (const client of clients) {
     try {
@@ -351,41 +411,44 @@ async function downloadYouTubeToFile(url, media, quality, outPath) {
     }
   }
 
-  try {
-    await youtubeDl(url, {
-      ...ytdlBaseOpts(url),
-      format: formatSelector(media, quality),
-      output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
-      mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
-      restrictFilenames: true,
-      extractorArgs: "youtube:player_client=android,web",
-    });
-    const dir = path.dirname(outPath);
-    const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
-    if (files.length) {
-      const found = path.join(dir, files[0]);
-      if (found !== outPath) fs.renameSync(found, outPath);
-      if (fs.statSync(outPath).size >= 1024) return;
+  if (!proxy) {
+    try {
+      await youtubeDl(url, {
+        ...ytdlBaseOpts(url),
+        format: formatSelector(media, quality),
+        output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
+        mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
+        restrictFilenames: true,
+      });
+      const dir = path.dirname(outPath);
+      const files = fs.readdirSync(dir).filter((n) => n.startsWith("file."));
+      if (files.length) {
+        const found = path.join(dir, files[0]);
+        if (found !== outPath) fs.renameSync(found, outPath);
+        if (fs.statSync(outPath).size >= 1024) return;
+      }
+    } catch (err) {
+      lastErr = err;
     }
-  } catch (err) {
-    lastErr = err;
   }
 
   const raw = String(lastErr?.message || lastErr || "");
-  if (/sign in|bot|login|cookie/i.test(raw)) {
+  if (/Sign in to confirm|not a bot|LOGIN_REQUIRED|blocked/i.test(raw)) {
     throw new Error(
-      "YouTube 擋住雲端主機。線上站較難下載 YouTube，請改用本機 npm start，或改試 TikTok／Bilibili 等平台。"
+      proxy
+        ? "即使使用代理仍被擋，請確認是住宅代理且未失效。"
+        : "YouTube 擋住雲端主機。請在「改 IP」填入住宅代理，或改用本機 npm start。"
     );
   }
   throw lastErr || new Error("YouTube 下載失敗");
 }
 
-async function extractInfo(url) {
-  if (isYouTube(url)) {
+async function extractInfo(url, proxy = "") {
+  if (isYouTube(url) && !proxy) {
     return extractYouTubeInfo(url);
   }
   const info = await youtubeDl(url, {
-    ...ytdlBaseOpts(url),
+    ...ytdlBaseOpts(url, proxy),
     dumpSingleJson: true,
     skipDownload: true,
     preferFreeFormats: true,
@@ -399,33 +462,55 @@ async function extractInfo(url) {
   return info;
 }
 
-function friendlyError(err) {
+function platformLabel(url) {
+  const h = hostOf(url);
+  if (!h) return "此平台";
+  if (isYouTube(url)) return "YouTube";
+  if (isBilibili(url)) return "Bilibili";
+  if (/(^|\.)tiktok\.com$|(^|\.)douyin\.com$/i.test(h)) return "TikTok／抖音";
+  if (/(^|\.)instagram\.com$/i.test(h)) return "Instagram";
+  if (/(^|\.)facebook\.com$|(^|\.)fb\.watch$/i.test(h)) return "Facebook";
+  if (/(^|\.)x\.com$|(^|\.)twitter\.com$/i.test(h)) return "X／Twitter";
+  if (/(^|\.)vimeo\.com$/i.test(h)) return "Vimeo";
+  if (/(^|\.)xiaohongshu\.com$|(^|\.)xhslink\.com$/i.test(h)) return "小紅書";
+  return h;
+}
+
+function friendlyError(err, url = "") {
   const raw = String(err?.stderr || err?.message || err);
-  if (/YouTube 擋住雲端主機/i.test(raw)) {
-    return raw;
+  const name = platformLabel(url);
+
+  if (/Your IP address is blocked|IP address is blocked|blocked from accessing/i.test(raw)) {
+    return `${name} 封鎖了雲端主機 IP。這是免費機房常見限制，請改用本機 npm start。`;
   }
-  if (/Sign in to confirm|confirm you.?re not a bot|not a bot|bot check/i.test(raw)) {
-    return "YouTube 擋住雲端主機。線上站較難下載 YouTube，請改用本機或改試其他平台。";
+  if (/Sign in to confirm|confirm you.?re not a bot|LOGIN_REQUIRED/i.test(raw)) {
+    return `${name} 擋住雲端主機（防機器人）。線上免費主機常失敗，請改用本機下載。`;
   }
-  if (/geo-restricted|VPN|proxy/i.test(raw)) {
-    return "此影片有地區限制，目前雲端網路無法取得。可換公開影片再試。";
+  if (/Failed to fetch.*OAuth|401: Unauthorized/i.test(raw)) {
+    return `${name} 拒絕雲端主機存取（401）。請改用本機 npm start。`;
+  }
+  if (/geo-restricted|VPN|proxy server/i.test(raw)) {
+    return `${name} 有地區限制，目前雲端網路無法取得。`;
   }
   if (/members only|付费|付費|會員專屬/i.test(raw)) {
-    return "此影片需要會員才能下載。";
+    return `${name}：此影片需要會員才能下載。`;
   }
   if (/private video|Private video|非公開|私人/i.test(raw)) {
-    return "這是私人／非公開影片，無法下載。";
+    return `${name}：這是私人／非公開內容，無法下載。`;
   }
   if (/Unsupported URL|No video/i.test(raw)) {
-    return "無法辨識此連結，請確認是完整的公開影片網址。";
+    return `${name}：無法辨識此連結，請確認是完整公開網址。`;
   }
   if (/HTTP Error 403|403: Forbidden/i.test(raw)) {
-    return "來源拒絕存取（403）。雲端 IP 可能被擋，請換公開短影音或本機下載。";
+    return `${name} 拒絕存取（403），多半是雲端 IP 被擋。請改用本機。`;
   }
-  if (/\bcookies?\b.*(?:required|needed)|login required|請先登入/i.test(raw)) {
-    return "YouTube 擋住雲端主機。線上站較難下載 YouTube，請改用本機或改試其他平台。";
+  // 注意：不可再寫成「去設 YT_COOKIE」——會讓所有平台錯誤看起來都一樣
+  if (/login required|Please log in|requires login|需要登入/i.test(raw)) {
+    return `${name} 要求登入才能抓取，雲端主機通常無法通過。請改用本機下載。`;
   }
-  return raw.slice(0, 400);
+  // 保留平台名 + 原始錯誤摘要，方便對照
+  const brief = raw.replace(/\s+/g, " ").slice(0, 220);
+  return `${name} 下載失敗：${brief}`;
 }
 
 function buildServerOption(pageUrl, media, quality, label) {
@@ -463,155 +548,199 @@ app.post("/api/resolve", async (req, res) => {
       ? req.body.quality
       : "best";
     const url = normalizeUrl(req.body?.url);
+    const proxy = pickRequestProxy(req);
 
-    // YouTube：雲端常被擋，仍盡力代抓；失敗會提示改用本機
-    if (isYouTube(url)) {
-      const info = await extractYouTubeInfo(url);
-      return res.json({
-        title: info.title,
-        filename: safeFilename(info.title),
-        thumbnail: info.thumbnail,
-        duration: info.duration,
-        extractor: info.extractor,
-        webpage_url: url,
-        media,
-        quality,
-        options: [
-          buildServerOption(
-            url,
-            media,
-            quality,
-            media === "audio" ? "下載聲音（YouTube 代抓）" : "下載影片含聲音（YouTube 代抓）"
-          ),
-        ],
-        note: "YouTube 在免費雲端常被擋；若失敗請用本機 npm start，或改試其他平台。",
-        version: APP_VERSION,
-      });
-    }
-
-    const relay = needsServerDownload(url);
-
-    if (relay) {
-      let title = "影片";
-      let thumbnail = null;
-      let duration = null;
-      let extractor = "unknown";
-      try {
-        const info = await extractInfo(url);
-        title = info.title || title;
-        thumbnail = info.thumbnail || null;
-        duration = info.duration ?? null;
-        extractor = info.extractor_key || info.extractor || extractor;
-      } catch (previewErr) {
-        console.warn("preview:", friendlyError(previewErr));
+    // 有代理：統一走 yt-dlp（可換出口 IP）
+    if (proxy || !isYouTube(url)) {
+      if (isYouTube(url) && proxy) {
+        const info = await extractInfo(url, proxy);
+        return res.json({
+          title: info.title || "YouTube 影片",
+          filename: safeFilename(info.title || "youtube"),
+          thumbnail: info.thumbnail || null,
+          duration: info.duration ?? null,
+          extractor: info.extractor_key || info.extractor || "youtube",
+          webpage_url: info.webpage_url || url,
+          media,
+          quality,
+          options: [
+            buildServerOption(
+              url,
+              media,
+              quality,
+              media === "audio" ? "下載聲音（經代理）" : "下載影片含聲音（經代理）"
+            ),
+          ],
+          note: "已使用你提供的代理 IP 解析。",
+          version: APP_VERSION,
+          usedProxy: true,
+        });
       }
 
-      return res.json({
-        title,
-        filename: safeFilename(title),
-        thumbnail,
-        duration,
-        extractor,
-        webpage_url: url,
-        media,
-        quality,
-        options: [
-          buildServerOption(
-            url,
-            media,
-            quality,
-            media === "audio" ? "下載聲音（本站代抓）" : "下載影片含聲音（本站代抓）"
-          ),
-        ],
-        note: isBilibili(url)
-          ? "Bilibili 影音通常分開，且直連會被擋。此平台改由本站代抓並合併後給你下載。"
-          : "此平台在雲端改由本站代抓，較穩定。",
-        version: APP_VERSION,
-      });
-    }
+      if (!isYouTube(url) && needsServerDownload(url)) {
+        let title = "影片";
+        let thumbnail = null;
+        let duration = null;
+        let extractor = "unknown";
+        try {
+          const info = await extractInfo(url, proxy);
+          title = info.title || title;
+          thumbnail = info.thumbnail || null;
+          duration = info.duration ?? null;
+          extractor = info.extractor_key || info.extractor || extractor;
+        } catch (previewErr) {
+          console.warn("preview:", friendlyError(previewErr, url));
+        }
 
-    const info = await extractInfo(url);
-    const formats = info.formats || [];
-    const title = info.title || "未命名";
-
-    let options;
-    if (media === "audio") {
-      options = pickAudioFormats(formats);
-      if (!options.length) {
-        options = pickVideoFormats(formats, "best")
-          .filter((o) => o.has_audio)
-          .slice(0, 5)
-          .map((o) => ({
-            ...o,
-            label: `${o.label}（含影像，請另轉 MP3）`,
-          }));
+        return res.json({
+          title,
+          filename: safeFilename(title),
+          thumbnail,
+          duration,
+          extractor,
+          webpage_url: url,
+          media,
+          quality,
+          options: [
+            buildServerOption(
+              url,
+              media,
+              quality,
+              proxy
+                ? "下載（經代理）"
+                : media === "audio"
+                  ? "下載聲音（本站代抓）"
+                  : "下載影片含聲音（本站代抓）"
+            ),
+          ],
+          note: proxy
+            ? "已使用你提供的代理 IP。"
+            : "若失敗，請在「改 IP」填住宅代理，或改用本機。",
+          version: APP_VERSION,
+          usedProxy: Boolean(proxy),
+        });
       }
-    } else {
-      options = pickVideoFormats(formats, quality);
-    }
 
-    const usable = options.filter((o) => o.has_audio !== false);
-    if (!usable.length) {
-      return res.json({
-        title,
-        filename: safeFilename(title),
-        thumbnail: info.thumbnail || null,
-        duration: info.duration ?? null,
-        extractor: info.extractor_key || info.extractor || "unknown",
-        webpage_url: info.webpage_url || url,
-        media,
-        quality,
-        options: [
-          buildServerOption(
-            url,
+      if (!isYouTube(url)) {
+        const info = await extractInfo(url, proxy);
+        const formats = info.formats || [];
+        const title = info.title || "未命名";
+
+        let options;
+        if (media === "audio") {
+          options = pickAudioFormats(formats);
+          if (!options.length) {
+            options = pickVideoFormats(formats, "best")
+              .filter((o) => o.has_audio)
+              .slice(0, 5)
+              .map((o) => ({
+                ...o,
+                label: `${o.label}（含影像，請另轉 MP3）`,
+              }));
+          }
+        } else {
+          options = pickVideoFormats(formats, quality);
+        }
+
+        const usable = options.filter((o) => o.has_audio !== false);
+        if (!usable.length) {
+          return res.json({
+            title,
+            filename: safeFilename(title),
+            thumbnail: info.thumbnail || null,
+            duration: info.duration ?? null,
+            extractor: info.extractor_key || info.extractor || "unknown",
+            webpage_url: info.webpage_url || url,
             media,
             quality,
-            media === "audio" ? "下載聲音（本站代抓）" : "下載影片含聲音（本站代抓）"
-          ),
-        ],
-        note: "此平台沒有可直連的合併檔，已改由本站代抓並合併影音。",
-        version: APP_VERSION,
-      });
+            options: [
+              buildServerOption(
+                url,
+                media,
+                quality,
+                proxy ? "下載（經代理）" : "下載影片含聲音（本站代抓）"
+              ),
+            ],
+            note: proxy ? "已使用代理。" : "此平台改由本站代抓。",
+            version: APP_VERSION,
+            usedProxy: Boolean(proxy),
+          });
+        }
+
+        return res.json({
+          title,
+          filename: safeFilename(title),
+          thumbnail: info.thumbnail || null,
+          duration: info.duration ?? null,
+          extractor: info.extractor_key || info.extractor || "unknown",
+          webpage_url: info.webpage_url || url,
+          media,
+          quality,
+          options: uniqueOptions(usable),
+          note: proxy
+            ? "已使用代理解析；若點下載仍失敗，請改用本站代抓。"
+            : "本站只轉換連結；下載直連影片來源，流量不經過本站。",
+          version: APP_VERSION,
+          usedProxy: Boolean(proxy),
+        });
+      }
     }
 
-    const unique = uniqueOptions(usable);
-    res.json({
-      title,
-      filename: safeFilename(title),
-      thumbnail: info.thumbnail || null,
-      duration: info.duration ?? null,
-      extractor: info.extractor_key || info.extractor || "unknown",
-      webpage_url: info.webpage_url || url,
+    // YouTube 無代理：youtubei 盡力而為
+    const info = await extractYouTubeInfo(url);
+    return res.json({
+      title: info.title,
+      filename: safeFilename(info.title),
+      thumbnail: info.thumbnail,
+      duration: info.duration,
+      extractor: info.extractor,
+      webpage_url: url,
       media,
       quality,
-      options: unique,
-      note: "本站只轉換連結；下載直連影片來源，流量不經過本站。",
+      options: [
+        buildServerOption(
+          url,
+          media,
+          quality,
+          media === "audio" ? "下載聲音（YouTube 代抓）" : "下載影片含聲音（YouTube 代抓）"
+        ),
+      ],
+      note: "未填代理時，YouTube 在免費雲端常失敗。請填「改 IP」住宅代理，或本機下載。",
       version: APP_VERSION,
+      usedProxy: false,
     });
   } catch (err) {
-    res.status(400).json({ detail: `解析失敗：${friendlyError(err)}`, version: APP_VERSION });
+    let url = "";
+    try {
+      url = normalizeUrl(req.body?.url);
+    } catch {
+      /* ignore */
+    }
+    res.status(400).json({ detail: `解析失敗：${friendlyError(err, url)}`, version: APP_VERSION });
   }
 });
 
 app.get("/api/download", async (req, res) => {
   let workDir = null;
+  let url = "";
   try {
     const media = req.query?.media === "audio" ? "audio" : "video";
     const quality = ["best", "1080", "720", "480"].includes(req.query?.quality)
       ? String(req.query.quality)
       : "best";
-    const url = normalizeUrl(req.query?.url);
+    url = normalizeUrl(req.query?.url);
+    const proxy = pickRequestProxy(req);
 
     workDir = fs.mkdtempSync(path.join(TMP_ROOT, "job-"));
     const ext = media === "audio" ? "m4a" : "mp4";
     const filePath = path.join(workDir, `file.${ext}`);
 
     if (isYouTube(url)) {
-      await downloadYouTubeToFile(url, media, quality, filePath);
+      await downloadYouTubeToFile(url, media, quality, filePath, proxy);
     } else {
       const outTemplate = path.join(workDir, "file.%(ext)s");
       await youtubeDl(url, {
-        ...ytdlBaseOpts(url),
+        ...ytdlBaseOpts(url, proxy),
         format: formatSelector(media, quality),
         output: outTemplate,
         mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
@@ -645,7 +774,7 @@ app.get("/api/download", async (req, res) => {
       }
     }
     if (!res.headersSent) {
-      res.status(400).json({ detail: `下載失敗：${friendlyError(err)}`, version: APP_VERSION });
+      res.status(400).json({ detail: `下載失敗：${friendlyError(err, url)}`, version: APP_VERSION });
     }
   }
 });

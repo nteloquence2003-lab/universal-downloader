@@ -37,15 +37,14 @@
         <li><span>3</span>存到手機／電腦</li>
       </ol>
       <p class="intro__note">
-        YouTube 在雲端會擋機房 IP。本站會<strong>自動改道</strong>經公開鏡像取得下載連結，
-        多數情況你不用自己填代理；若仍失敗再改用本機 <code>npm start</code>。
+        貼上網址，按一下就能下載。技術處理都在後端自動完成。
       </p>
     </section>
 
     <section class="box" aria-labelledby="form-title">
       <h2 id="form-title" class="box__title">開始下載</h2>
-      <p class="box__warn" id="cloud-warn">
-        線上版：後端會自動嘗試 Piped／Invidious 改道。若全部失敗，請在電腦執行 <code>npm start</code>。
+      <p class="box__warn" id="cloud-warn" hidden>
+        若下載失敗，可改在電腦執行 <code>npm start</code> 使用本機下載。
       </p>
 
       <form id="resolve-form" autocomplete="off">

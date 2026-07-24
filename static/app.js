@@ -225,13 +225,7 @@
       }
 
       renderResult(payload);
-      setStatus(
-        payload.autoReroute
-          ? "轉換成功（後端已自動改道）！按下面大按鈕下載。"
-          : payload.usedProxy
-            ? "轉換成功（已走代理 IP）！按下面大按鈕下載。"
-            : "轉換成功！按下面大按鈕就能下載。"
-      );
+      setStatus("轉換成功！按下面大按鈕就能下載。");
     } catch (err) {
       setStatus(err.message || "發生錯誤，請稍後再試", true);
     } finally {

@@ -17,7 +17,7 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-24-yt6";
+const APP_VERSION = "2026-07-24-yt7";
 
 /** 公開 Piped／Invidious：用別人的出口碰 YouTube，再把直連回給使用者 */
 const PIPED_APIS = String(
@@ -493,7 +493,7 @@ async function resolveYouTubeViaFrontends(id, media, quality) {
         duration: data.duration ?? null,
         extractor: `piped:${host}`,
         options,
-        note: "後端已自動改道（Piped）。下載直連鏡像／來源，不必填代理。",
+        note: "後端已自動處理，按下方按鈕即可下載。",
       };
     } catch (err) {
       errors.push(`${base}: ${err.message || err}`);
@@ -520,7 +520,7 @@ async function resolveYouTubeViaFrontends(id, media, quality) {
         duration: data.lengthSeconds ?? null,
         extractor: `invidious:${host}`,
         options,
-        note: "後端已自動改道（Invidious）。下載直連來源，不必填代理。",
+        note: "後端已自動處理，按下方按鈕即可下載。",
       };
     } catch (err) {
       errors.push(`${base}: ${err.message || err}`);
@@ -602,6 +602,18 @@ async function downloadYouTubeToFile(url, media, quality, outPath, proxy = "") {
     }
   }
 
+  // 雲端優先：後端自動改道 Piped／Invidious（不碰本機房 YouTube IP）
+  try {
+    const front = await resolveYouTubeViaFrontends(id, media, quality);
+    const best = (front.options || []).find((o) => o.url && (media === "audio" || o.has_audio !== false));
+    if (best?.url) {
+      await downloadUrlToFile(best.url, outPath);
+      return;
+    }
+  } catch (err) {
+    lastErr = err;
+  }
+
   const yt = await createYouTubeClient();
   const q = mapQualityToYoutubei(quality);
   const clients = ["ANDROID", "IOS", "TV_EMBEDDED", "TV", "MWEB", "WEB"];
@@ -670,24 +682,12 @@ async function downloadYouTubeToFile(url, media, quality, outPath, proxy = "") {
     }
   }
 
-  // 最後手段：經 Piped／Invidious 取得串流再由本機拉取
-  try {
-    const front = await resolveYouTubeViaFrontends(id, media, quality);
-    const best = (front.options || []).find((o) => o.url);
-    if (best?.url) {
-      await downloadUrlToFile(best.url, outPath);
-      return;
-    }
-  } catch (err) {
-    lastErr = err;
-  }
-
   const raw = String(lastErr?.message || lastErr || "");
   if (/Sign in to confirm|not a bot|LOGIN_REQUIRED|blocked|前端鏡像/i.test(raw)) {
     throw new Error(
       proxy
         ? "即使使用代理仍被擋，請確認是住宅代理且未失效。"
-        : "YouTube 擋住雲端主機，且自動改道也失敗。請改用本機 npm start，或在主機設定 DOWNLOAD_PROXY。"
+        : "YouTube 下載失敗（雲端自動改道也無法取得）。請改用本機 npm start。"
     );
   }
   throw lastErr || new Error("YouTube 下載失敗");
@@ -949,6 +949,15 @@ app.post("/api/resolve", async (req, res) => {
         (front.options || []).filter((o) => media === "audio" || o.has_audio !== false)
       );
       if (usable.length) {
+        // 直連為主；再附一個後端代抓備援，前端只要按下載即可
+        usable.push(
+          buildServerOption(
+            url,
+            media,
+            quality,
+            media === "audio" ? "備援：本站代抓聲音" : "備援：本站代抓影片"
+          )
+        );
         return res.json({
           title: front.title,
           filename: safeFilename(front.title),
@@ -959,7 +968,7 @@ app.post("/api/resolve", async (req, res) => {
           media,
           quality,
           options: usable,
-          note: front.note,
+          note: "後端已自動處理，按下方按鈕即可下載。",
           version: APP_VERSION,
           usedProxy: false,
           autoReroute: true,
@@ -969,13 +978,25 @@ app.post("/api/resolve", async (req, res) => {
       console.warn("youtube auto-reroute:", frontErr.message || frontErr);
     }
 
-    const info = await extractYouTubeInfo(url);
+    // 改道失敗：仍回傳代抓按鈕，下載時後端會再試一次改道
+    let title = "YouTube 影片";
+    let thumbnail = null;
+    let duration = null;
+    try {
+      const info = await extractYouTubeInfo(url);
+      title = info.title || title;
+      thumbnail = info.thumbnail;
+      duration = info.duration;
+    } catch {
+      /* ignore — 標題拿不到仍可嘗試代抓 */
+    }
+
     return res.json({
-      title: info.title,
-      filename: safeFilename(info.title),
-      thumbnail: info.thumbnail,
-      duration: info.duration,
-      extractor: info.extractor,
+      title,
+      filename: safeFilename(title),
+      thumbnail,
+      duration,
+      extractor: "youtube",
       webpage_url: url,
       media,
       quality,
@@ -984,10 +1005,10 @@ app.post("/api/resolve", async (req, res) => {
           url,
           media,
           quality,
-          media === "audio" ? "下載聲音（YouTube 代抓）" : "下載影片含聲音（YouTube 代抓）"
+          media === "audio" ? "立刻下載聲音" : "立刻下載影片（含聲音）"
         ),
       ],
-      note: "自動改道暫時不可用，改由本站代抓。若仍失敗請用本機 npm start。",
+      note: "後端會自動嘗試取得檔案，請直接按下載。",
       version: APP_VERSION,
       usedProxy: false,
     });

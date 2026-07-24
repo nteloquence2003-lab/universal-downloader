@@ -11,11 +11,24 @@ const express = require("express");
 const cors = require("cors");
 const youtubeDl = require("youtube-dl-exec");
 const ffmpegPath = require("ffmpeg-static");
+const { Innertube, UniversalCache } = require("youtubei.js");
 
 const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
+const APP_VERSION = "2026-07-24-yt2";
+
+let youtubeClientPromise = null;
+function getYouTubeClient() {
+  if (!youtubeClientPromise) {
+    youtubeClientPromise = Innertube.create({
+      cache: new UniversalCache(false),
+      retrieve_player: true,
+    });
+  }
+  return youtubeClientPromise;
+}
 
 const SUPPORTED_HINTS = [
   "YouTube",
@@ -251,7 +264,87 @@ function formatSelector(media, quality) {
   return `bv*[height<=${h}]+ba/b[height<=${h}]/wv*+ba/w`;
 }
 
+function youtubeVideoId(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.replace(/^www\./, "") === "youtu.be") {
+      return u.pathname.replace(/^\//, "").split("/")[0] || null;
+    }
+    if (u.searchParams.get("v")) return u.searchParams.get("v");
+    const parts = u.pathname.split("/").filter(Boolean);
+    const idx = parts.findIndex((p) => ["shorts", "embed", "live", "v"].includes(p));
+    if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function mapQualityToYoutubei(quality) {
+  if (quality === "1080") return "1080p";
+  if (quality === "720") return "720p";
+  if (quality === "480") return "480p";
+  return "best";
+}
+
+async function extractYouTubeInfo(url) {
+  const id = youtubeVideoId(url);
+  if (!id) throw new Error("無法辨識 YouTube 影片 ID");
+  const yt = await getYouTubeClient();
+  const info = await yt.getBasicInfo(id);
+  const basic = info.basic_info || {};
+  return {
+    id,
+    title: basic.title || "YouTube 影片",
+    thumbnail: basic.thumbnail?.[0]?.url || basic.thumbnails?.[0]?.url || null,
+    duration: basic.duration || null,
+    extractor: "youtubei",
+    webpage_url: url,
+  };
+}
+
+async function downloadYouTubeToFile(url, media, quality, outPath) {
+  const id = youtubeVideoId(url);
+  if (!id) throw new Error("無法辨識 YouTube 影片 ID");
+  const yt = await getYouTubeClient();
+  const q = mapQualityToYoutubei(quality);
+  const clients = ["ANDROID", "IOS", "TV", "WEB"];
+  let lastErr = null;
+
+  for (const client of clients) {
+    try {
+      const stream = await yt.download(id, {
+        type: media === "audio" ? "audio" : "video+audio",
+        quality: q,
+        format: media === "audio" ? "any" : "mp4",
+        client,
+      });
+      await new Promise((resolve, reject) => {
+        const ws = fs.createWriteStream(outPath);
+        stream.on("error", reject);
+        ws.on("error", reject);
+        ws.on("finish", resolve);
+        stream.pipe(ws);
+      });
+      const size = fs.statSync(outPath).size;
+      if (size < 1024) throw new Error("下載檔案過小，可能失敗");
+      return;
+    } catch (err) {
+      lastErr = err;
+      try {
+        if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  throw lastErr || new Error("YouTube 下載失敗");
+}
+
 async function extractInfo(url) {
+  if (isYouTube(url)) {
+    return extractYouTubeInfo(url);
+  }
   const info = await youtubeDl(url, {
     ...ytdlBaseOpts(url),
     dumpSingleJson: true,
@@ -315,6 +408,7 @@ function buildServerOption(pageUrl, media, quality, label) {
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
+    version: APP_VERSION,
     supported: SUPPORTED_HINTS,
     qualities: QUALITY_PRESETS,
     ffmpeg: Boolean(ffmpegPath),
@@ -328,13 +422,39 @@ app.post("/api/resolve", async (req, res) => {
       ? req.body.quality
       : "best";
     const url = normalizeUrl(req.body?.url);
+
+    // YouTube：改走 youtubei（雲端較不易被當成機器人）
+    if (isYouTube(url)) {
+      const info = await extractYouTubeInfo(url);
+      return res.json({
+        title: info.title,
+        filename: safeFilename(info.title),
+        thumbnail: info.thumbnail,
+        duration: info.duration,
+        extractor: info.extractor,
+        webpage_url: url,
+        media,
+        quality,
+        options: [
+          buildServerOption(
+            url,
+            media,
+            quality,
+            media === "audio" ? "下載聲音（YouTube 代抓）" : "下載影片含聲音（YouTube 代抓）"
+          ),
+        ],
+        note: "YouTube 由本站代抓後給你下載（雲端防爬較嚴）。",
+        version: APP_VERSION,
+      });
+    }
+
     const relay = needsServerDownload(url);
 
     if (relay) {
-      let title = isYouTube(url) ? "YouTube 影片" : "影片";
+      let title = "影片";
       let thumbnail = null;
       let duration = null;
-      let extractor = isYouTube(url) ? "youtube" : "unknown";
+      let extractor = "unknown";
       try {
         const info = await extractInfo(url);
         title = info.title || title;
@@ -342,13 +462,7 @@ app.post("/api/resolve", async (req, res) => {
         duration = info.duration ?? null;
         extractor = info.extractor_key || info.extractor || extractor;
       } catch (previewErr) {
-        // 預覽失敗仍嘗試給代下入口；真正錯誤在下載時或下面直接回傳
-        const msg = friendlyError(previewErr);
-        // YouTube 預覽失敗時多數也無法代下，直接回清楚錯誤
-        if (isYouTube(url)) {
-          return res.status(400).json({ detail: `解析失敗：${msg}` });
-        }
-        console.warn("preview:", msg);
+        console.warn("preview:", friendlyError(previewErr));
       }
 
       return res.json({
@@ -371,6 +485,7 @@ app.post("/api/resolve", async (req, res) => {
         note: isBilibili(url)
           ? "Bilibili 影音通常分開，且直連會被擋。此平台改由本站代抓並合併後給你下載。"
           : "此平台在雲端改由本站代抓，較穩定。",
+        version: APP_VERSION,
       });
     }
 
@@ -414,6 +529,7 @@ app.post("/api/resolve", async (req, res) => {
           ),
         ],
         note: "此平台沒有可直連的合併檔，已改由本站代抓並合併影音。",
+        version: APP_VERSION,
       });
     }
 
@@ -429,9 +545,10 @@ app.post("/api/resolve", async (req, res) => {
       quality,
       options: unique,
       note: "本站只轉換連結；下載直連影片來源，流量不經過本站。",
+      version: APP_VERSION,
     });
   } catch (err) {
-    res.status(400).json({ detail: `解析失敗：${friendlyError(err)}` });
+    res.status(400).json({ detail: `解析失敗：${friendlyError(err)}`, version: APP_VERSION });
   }
 });
 
@@ -445,24 +562,29 @@ app.get("/api/download", async (req, res) => {
     const url = normalizeUrl(req.query?.url);
 
     workDir = fs.mkdtempSync(path.join(TMP_ROOT, "job-"));
-    const outTemplate = path.join(workDir, "file.%(ext)s");
+    const ext = media === "audio" ? "m4a" : "mp4";
+    const filePath = path.join(workDir, `file.${ext}`);
 
-    await youtubeDl(url, {
-      ...ytdlBaseOpts(url),
-      format: formatSelector(media, quality),
-      output: outTemplate,
-      mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
-      restrictFilenames: true,
-    });
-
-    const files = fs.readdirSync(workDir).filter((n) => !n.endsWith(".part"));
-    if (!files.length) {
-      throw new Error("下載完成但找不到檔案");
+    if (isYouTube(url)) {
+      await downloadYouTubeToFile(url, media, quality, filePath);
+    } else {
+      const outTemplate = path.join(workDir, "file.%(ext)s");
+      await youtubeDl(url, {
+        ...ytdlBaseOpts(url),
+        format: formatSelector(media, quality),
+        output: outTemplate,
+        mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
+        restrictFilenames: true,
+      });
+      const files = fs.readdirSync(workDir).filter((n) => !n.endsWith(".part"));
+      if (!files.length) throw new Error("下載完成但找不到檔案");
+      const found = path.join(workDir, files[0]);
+      if (found !== filePath) {
+        fs.renameSync(found, filePath);
+      }
     }
-    const filePath = path.join(workDir, files[0]);
-    const ext = path.extname(files[0]).replace(".", "") || (media === "audio" ? "m4a" : "mp4");
-    const downloadName = `download_${Date.now()}.${ext}`;
 
+    const downloadName = `download_${Date.now()}.${ext}`;
     res.download(filePath, downloadName, (err) => {
       try {
         fs.rmSync(workDir, { recursive: true, force: true });
@@ -482,7 +604,7 @@ app.get("/api/download", async (req, res) => {
       }
     }
     if (!res.headersSent) {
-      res.status(400).json({ detail: `下載失敗：${friendlyError(err)}` });
+      res.status(400).json({ detail: `下載失敗：${friendlyError(err)}`, version: APP_VERSION });
     }
   }
 });

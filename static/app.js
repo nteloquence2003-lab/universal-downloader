@@ -106,10 +106,17 @@
     }
 
     const options = data.options || [];
+    // 影片模式：優先走本站合併（Facebook 等影音分離平台），避免直連只下到聲音
     const best =
-      options.find((o) => o.has_audio !== false && o.via !== "server") ||
-      options.find((o) => o.via === "server") ||
-      options[0];
+      data.media === "audio"
+        ? options.find((o) => o.via !== "server") || options[0]
+        : options.find((o) => o.via === "server") ||
+          options.find(
+            (o) =>
+              o.has_audio !== false &&
+              !/^(m4a|mp3|aac|opus|ogg)$/i.test(String(o.ext || ""))
+          ) ||
+          options[0];
 
     if (best) {
       primaryDownload.hidden = false;

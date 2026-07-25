@@ -17,7 +17,7 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-24-pot1";
+const APP_VERSION = "2026-07-25-fb1";
 
 function resolveYoutubeDl() {
   const candidates = [
@@ -182,9 +182,21 @@ function isBilibili(url) {
   );
 }
 
-/** 這些平台在雲端常需本站代抓（影音分離或防爬） */
+function isFacebook(url) {
+  const h = hostOf(url);
+  return (
+    h === "fb.watch" ||
+    h === "fb.com" ||
+    h === "m.facebook.com" ||
+    /(^|\.)facebook\.com$/i.test(h) ||
+    /(^|\.)fb\.watch$/i.test(h) ||
+    /(^|\.)fb\.com$/i.test(h)
+  );
+}
+
+/** 這些平台影音常分離，需本站用 ffmpeg 合併 */
 function needsServerDownload(url) {
-  return isBilibili(url) || isYouTube(url);
+  return isBilibili(url) || isYouTube(url) || isFacebook(url);
 }
 
 function heightOf(fmt) {
@@ -228,15 +240,25 @@ function pickVideoFormats(formats, quality) {
     if (!f.url) continue;
     const vcodec = f.vcodec || "none";
     const acodec = f.acodec || "none";
-    if (vcodec === "none") continue;
+    const formatId = String(f.format_id || "");
     const height = heightOf(f);
+    // Facebook 漸進式 hd/sd 常沒填 vcodec，但實際是有畫面的 mp4
+    const progressiveFb = /^(hd|sd)$/i.test(formatId);
+    const looksLikeVideo =
+      vcodec !== "none" ||
+      progressiveFb ||
+      height > 0 ||
+      (f.video_ext && f.video_ext !== "none");
+    if (!looksLikeVideo) continue;
+
     if (quality !== "best") {
       const target = Number(quality);
       if (height && height > target) continue;
     }
-    const hasAudio = acodec !== "none";
+    // 未標 acodec 的漸進式，當作含聲音
+    const hasAudio = acodec !== "none" || progressiveFb;
     candidates.push({
-      format_id: String(f.format_id),
+      format_id: formatId,
       ext: extOf(f),
       height: height || null,
       fps: f.fps ?? null,
@@ -308,6 +330,7 @@ function uniqueOptions(options, limit = 8) {
 function refererFor(url) {
   if (isBilibili(url)) return "https://www.bilibili.com/";
   if (isYouTube(url)) return "https://www.youtube.com/";
+  if (isFacebook(url)) return "https://www.facebook.com/";
   try {
     return new URL(url).origin + "/";
   } catch {
@@ -353,7 +376,7 @@ function ytdlBaseOpts(url, proxy = "") {
 async function runYtDlpDownload(url, media, quality, outPath, proxy = "") {
   await youtubeDl(url, {
     ...ytdlBaseOpts(url, proxy),
-    format: formatSelector(media, quality),
+    format: formatSelector(media, quality, url),
     output: outPath.replace(/\.[^.]+$/, ".%(ext)s"),
     mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
     restrictFilenames: true,
@@ -366,9 +389,17 @@ async function runYtDlpDownload(url, media, quality, outPath, proxy = "") {
   if (fs.statSync(outPath).size < 1024) throw new Error("下載檔案過小，可能失敗");
 }
 
-function formatSelector(media, quality) {
+function formatSelector(media, quality, url = "") {
   if (media === "audio") {
     return "ba/bestaudio/best";
+  }
+  // Facebook：強制影+音合併，避免只下到 DASH 音訊或無聲畫面
+  if (isFacebook(url)) {
+    if (quality === "best") {
+      return "bv*[vcodec!=none]+ba[acodec!=none]/b[vcodec!=none][acodec!=none]/bv*+ba/b";
+    }
+    const h = Number(quality);
+    return `bv*[height<=${h}][vcodec!=none]+ba[acodec!=none]/b[height<=${h}][vcodec!=none]/bv*+ba/b`;
   }
   if (quality === "best") {
     return "bv*+ba/b";
@@ -898,7 +929,9 @@ app.post("/api/resolve", async (req, res) => {
           ],
           note: proxy
             ? "已使用你提供的代理 IP。"
-            : "若失敗，請改用本機 npm start，或請站長設定 DOWNLOAD_PROXY。",
+            : isFacebook(url)
+              ? "Facebook 影音常分開，本站會合併成「有畫面＋聲音」再給你下載。"
+              : "若失敗，請改用本機 npm start，或請站長設定 DOWNLOAD_PROXY。",
           version: APP_VERSION,
           usedProxy: Boolean(proxy),
         });
@@ -1101,19 +1134,55 @@ app.get("/api/download", async (req, res) => {
     if (isYouTube(url)) {
       await downloadYouTubeToFile(url, media, quality, filePath, proxy);
     } else {
-      const outTemplate = path.join(workDir, "file.%(ext)s");
-      await youtubeDl(url, {
-        ...ytdlBaseOpts(url, proxy),
-        format: formatSelector(media, quality),
-        output: outTemplate,
-        mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
-        restrictFilenames: true,
-      });
-      const files = fs.readdirSync(workDir).filter((n) => !n.endsWith(".part"));
-      if (!files.length) throw new Error("下載完成但找不到檔案");
-      const found = path.join(workDir, files[0]);
+      const tryDownload = async (format) => {
+        const outTemplate = path.join(workDir, "file.%(ext)s");
+        // 清掉前次殘檔
+        for (const n of fs.readdirSync(workDir)) {
+          try {
+            fs.unlinkSync(path.join(workDir, n));
+          } catch {
+            /* ignore */
+          }
+        }
+        await youtubeDl(url, {
+          ...ytdlBaseOpts(url, proxy),
+          format,
+          output: outTemplate,
+          mergeOutputFormat: media === "audio" ? "m4a" : "mp4",
+          restrictFilenames: true,
+        });
+        const files = fs.readdirSync(workDir).filter((n) => !n.endsWith(".part"));
+        if (!files.length) throw new Error("下載完成但找不到檔案");
+        return path.join(workDir, files[0]);
+      };
+
+      let found;
+      try {
+        found = await tryDownload(formatSelector(media, quality, url));
+      } catch (firstErr) {
+        if (media === "video" && isFacebook(url)) {
+          found = await tryDownload("bestvideo+bestaudio/best[vcodec!=none]/best");
+        } else {
+          throw firstErr;
+        }
+      }
+
+      if (media === "video" && isFacebook(url)) {
+        const gotExt = path.extname(found).toLowerCase();
+        if (gotExt === ".m4a" || gotExt === ".mp3" || gotExt === ".aac" || gotExt === ".opus") {
+          found = await tryDownload("bestvideo+bestaudio/best[vcodec!=none]");
+          const gotExt2 = path.extname(found).toLowerCase();
+          if (gotExt2 === ".m4a" || gotExt2 === ".mp3" || gotExt2 === ".aac" || gotExt2 === ".opus") {
+            throw new Error("Facebook 無法取得含畫面影片，請確認是公開影片連結");
+          }
+        }
+      }
+
       if (found !== filePath) {
         fs.renameSync(found, filePath);
+      }
+      if (media === "video" && isFacebook(url) && fs.statSync(filePath).size < 50 * 1024) {
+        throw new Error("Facebook 下載檔過小，可能只有聲音，請再試一次或換公開影片連結");
       }
     }
 

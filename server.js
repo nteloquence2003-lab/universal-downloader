@@ -7,6 +7,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const express = require("express");
 const cors = require("cors");
 const ytdlExec = require("youtube-dl-exec");
@@ -17,7 +18,7 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-28-ig1";
+const APP_VERSION = "2026-07-28-ig2";
 
 function resolveYoutubeDl() {
   const candidates = [
@@ -419,13 +420,13 @@ function formatSelector(media, quality, url = "") {
   if (media === "audio") {
     return "ba/bestaudio/best";
   }
-  // FB／IG／抖音／TikTok：強制影+音合併，避免只下到聲音
+  // FB／IG／抖音／TikTok：強制影+音合併，禁止落到純音訊
   if (needsAvMerge(url)) {
     if (quality === "best") {
-      return "bv*[vcodec!=none]+ba[acodec!=none]/b[vcodec!=none][acodec!=none]/bv*+ba/b";
+      return "bv*[vcodec!=none]+ba/b[vcodec!=none]/bestvideo+bestaudio/best[vcodec!=none]";
     }
     const h = Number(quality);
-    return `bv*[height<=${h}][vcodec!=none]+ba[acodec!=none]/b[height<=${h}][vcodec!=none]/bv*+ba/b`;
+    return `bv*[height<=${h}][vcodec!=none]+ba/b[height<=${h}][vcodec!=none]/bestvideo[height<=${h}]+bestaudio/best[vcodec!=none]`;
   }
   if (quality === "best") {
     return "bv*+ba/b";
@@ -443,7 +444,34 @@ function platformMergeNote(url) {
 
 function audioOnlyExt(filePath) {
   const gotExt = path.extname(filePath).toLowerCase();
-  return gotExt === ".m4a" || gotExt === ".mp3" || gotExt === ".aac" || gotExt === ".opus" || gotExt === ".ogg";
+  return gotExt === ".m4a" || gotExt === ".mp3" || gotExt === ".aac" || gotExt === ".opus" || gotExt === ".ogg" || gotExt === ".wav";
+}
+
+/** mp4 也可能只有聲音；用 ffmpeg 檢查是否真有影像軌 */
+function fileHasVideoStream(filePath) {
+  if (!ffmpegPath || !filePath || !fs.existsSync(filePath)) return false;
+  try {
+    execFileSync(ffmpegPath, ["-hide_banner", "-i", filePath], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 45000,
+    });
+    return false;
+  } catch (err) {
+    const msg = `${err.stderr || ""}${err.stdout || ""}${err.message || ""}`;
+    return /Stream #\d+(\.\d+)?(?:\[[^\]]*\])?: Video:/i.test(msg);
+  }
+}
+
+function avMergeFormatCandidates(media, quality, url) {
+  if (media === "audio") return [formatSelector(media, quality, url)];
+  const primary = formatSelector(media, quality, url);
+  return [
+    primary,
+    "bv*[vcodec!=none]+ba[acodec!=none]/b[vcodec!=none]",
+    "bestvideo+bestaudio/best[vcodec!=none]",
+    "best[ext=mp4][vcodec!=none]/best[vcodec!=none]",
+  ];
 }
 
 function youtubeVideoId(url) {
@@ -1192,32 +1220,47 @@ app.get("/api/download", async (req, res) => {
         return path.join(workDir, files[0]);
       };
 
-      let found;
-      try {
-        found = await tryDownload(formatSelector(media, quality, url));
-      } catch (firstErr) {
-        if (media === "video" && needsAvMerge(url)) {
-          found = await tryDownload("bestvideo+bestaudio/best[vcodec!=none]/best");
-        } else {
-          throw firstErr;
+      let found = null;
+      let lastDlErr = null;
+      const candidates =
+        media === "video" && needsAvMerge(url)
+          ? avMergeFormatCandidates(media, quality, url)
+          : [formatSelector(media, quality, url)];
+
+      for (const format of candidates) {
+        try {
+          const got = await tryDownload(format);
+          if (media === "video" && needsAvMerge(url)) {
+            if (audioOnlyExt(got) || !fileHasVideoStream(got)) {
+              console.warn("reject audio-only/no-video file:", got, "format=", format);
+              try {
+                fs.unlinkSync(got);
+              } catch {
+                /* ignore */
+              }
+              lastDlErr = new Error("下載結果沒有影像軌，改試其他格式");
+              continue;
+            }
+          }
+          found = got;
+          break;
+        } catch (err) {
+          lastDlErr = err;
+          console.warn("download attempt failed:", format, err.message || err);
         }
       }
 
-      if (media === "video" && needsAvMerge(url)) {
-        if (audioOnlyExt(found)) {
-          found = await tryDownload("bestvideo+bestaudio/best[vcodec!=none]");
-          if (audioOnlyExt(found)) {
-            const name = platformLabel(url);
-            throw new Error(`${name} 無法取得含畫面影片，請確認是公開影片連結`);
-          }
-        }
+      if (!found) {
+        throw lastDlErr || new Error(`${platformLabel(url)} 無法取得含畫面影片`);
       }
 
       if (found !== filePath) {
         fs.renameSync(found, filePath);
       }
-      if (media === "video" && needsAvMerge(url) && fs.statSync(filePath).size < 50 * 1024) {
-        throw new Error(`${platformLabel(url)} 下載檔過小，可能只有聲音，請再試一次或換公開影片連結`);
+      if (media === "video" && needsAvMerge(url)) {
+        if (!fileHasVideoStream(filePath) || fs.statSync(filePath).size < 50 * 1024) {
+          throw new Error(`${platformLabel(url)} 下載後仍沒有畫面，請換公開影片或改用本機 npm start`);
+        }
       }
     }
 

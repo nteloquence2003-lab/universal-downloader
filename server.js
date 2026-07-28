@@ -17,7 +17,7 @@ const ROOT = __dirname;
 const STATIC = path.join(ROOT, "static");
 const PORT = Number(process.env.PORT) || 8787;
 const TMP_ROOT = path.join(os.tmpdir(), "wanyong-dl");
-const APP_VERSION = "2026-07-25-fb1";
+const APP_VERSION = "2026-07-28-ig1";
 
 function resolveYoutubeDl() {
   const candidates = [
@@ -194,9 +194,31 @@ function isFacebook(url) {
   );
 }
 
-/** 這些平台影音常分離，需本站用 ffmpeg 合併 */
+function isInstagram(url) {
+  const h = hostOf(url);
+  return h === "instagr.am" || /(^|\.)instagram\.com$/i.test(h);
+}
+
+function isTikTokOrDouyin(url) {
+  const h = hostOf(url);
+  return (
+    h === "vm.tiktok.com" ||
+    h === "vt.tiktok.com" ||
+    h === "v.douyin.com" ||
+    /(^|\.)tiktok\.com$/i.test(h) ||
+    /(^|\.)douyin\.com$/i.test(h) ||
+    /(^|\.)iesdouyin\.com$/i.test(h)
+  );
+}
+
+/** 影音常分離，需本站 ffmpeg 合併成有畫面＋聲音 */
+function needsAvMerge(url) {
+  return isFacebook(url) || isInstagram(url) || isTikTokOrDouyin(url);
+}
+
+/** 這些平台影音常分離或需代抓 */
 function needsServerDownload(url) {
-  return isBilibili(url) || isYouTube(url) || isFacebook(url);
+  return isBilibili(url) || isYouTube(url) || needsAvMerge(url);
 }
 
 function heightOf(fmt) {
@@ -331,6 +353,10 @@ function refererFor(url) {
   if (isBilibili(url)) return "https://www.bilibili.com/";
   if (isYouTube(url)) return "https://www.youtube.com/";
   if (isFacebook(url)) return "https://www.facebook.com/";
+  if (isInstagram(url)) return "https://www.instagram.com/";
+  if (isTikTokOrDouyin(url)) {
+    return /douyin/i.test(hostOf(url)) ? "https://www.douyin.com/" : "https://www.tiktok.com/";
+  }
   try {
     return new URL(url).origin + "/";
   } catch {
@@ -393,8 +419,8 @@ function formatSelector(media, quality, url = "") {
   if (media === "audio") {
     return "ba/bestaudio/best";
   }
-  // Facebook：強制影+音合併，避免只下到 DASH 音訊或無聲畫面
-  if (isFacebook(url)) {
+  // FB／IG／抖音／TikTok：強制影+音合併，避免只下到聲音
+  if (needsAvMerge(url)) {
     if (quality === "best") {
       return "bv*[vcodec!=none]+ba[acodec!=none]/b[vcodec!=none][acodec!=none]/bv*+ba/b";
     }
@@ -406,6 +432,18 @@ function formatSelector(media, quality, url = "") {
   }
   const h = Number(quality);
   return `bv*[height<=${h}]+ba/b[height<=${h}]/wv*+ba/w`;
+}
+
+function platformMergeNote(url) {
+  if (isInstagram(url)) return "Instagram 影音常分開，本站會合併成「有畫面＋聲音」再給你下載。";
+  if (isTikTokOrDouyin(url)) return "抖音／TikTok 影音常分開，本站會合併成「有畫面＋聲音」再給你下載。";
+  if (isFacebook(url)) return "Facebook 影音常分開，本站會合併成「有畫面＋聲音」再給你下載。";
+  return "若失敗，請改用本機 npm start，或請站長設定 DOWNLOAD_PROXY。";
+}
+
+function audioOnlyExt(filePath) {
+  const gotExt = path.extname(filePath).toLowerCase();
+  return gotExt === ".m4a" || gotExt === ".mp3" || gotExt === ".aac" || gotExt === ".opus" || gotExt === ".ogg";
 }
 
 function youtubeVideoId(url) {
@@ -929,9 +967,7 @@ app.post("/api/resolve", async (req, res) => {
           ],
           note: proxy
             ? "已使用你提供的代理 IP。"
-            : isFacebook(url)
-              ? "Facebook 影音常分開，本站會合併成「有畫面＋聲音」再給你下載。"
-              : "若失敗，請改用本機 npm start，或請站長設定 DOWNLOAD_PROXY。",
+            : platformMergeNote(url),
           version: APP_VERSION,
           usedProxy: Boolean(proxy),
         });
@@ -1160,20 +1196,19 @@ app.get("/api/download", async (req, res) => {
       try {
         found = await tryDownload(formatSelector(media, quality, url));
       } catch (firstErr) {
-        if (media === "video" && isFacebook(url)) {
+        if (media === "video" && needsAvMerge(url)) {
           found = await tryDownload("bestvideo+bestaudio/best[vcodec!=none]/best");
         } else {
           throw firstErr;
         }
       }
 
-      if (media === "video" && isFacebook(url)) {
-        const gotExt = path.extname(found).toLowerCase();
-        if (gotExt === ".m4a" || gotExt === ".mp3" || gotExt === ".aac" || gotExt === ".opus") {
+      if (media === "video" && needsAvMerge(url)) {
+        if (audioOnlyExt(found)) {
           found = await tryDownload("bestvideo+bestaudio/best[vcodec!=none]");
-          const gotExt2 = path.extname(found).toLowerCase();
-          if (gotExt2 === ".m4a" || gotExt2 === ".mp3" || gotExt2 === ".aac" || gotExt2 === ".opus") {
-            throw new Error("Facebook 無法取得含畫面影片，請確認是公開影片連結");
+          if (audioOnlyExt(found)) {
+            const name = platformLabel(url);
+            throw new Error(`${name} 無法取得含畫面影片，請確認是公開影片連結`);
           }
         }
       }
@@ -1181,8 +1216,8 @@ app.get("/api/download", async (req, res) => {
       if (found !== filePath) {
         fs.renameSync(found, filePath);
       }
-      if (media === "video" && isFacebook(url) && fs.statSync(filePath).size < 50 * 1024) {
-        throw new Error("Facebook 下載檔過小，可能只有聲音，請再試一次或換公開影片連結");
+      if (media === "video" && needsAvMerge(url) && fs.statSync(filePath).size < 50 * 1024) {
+        throw new Error(`${platformLabel(url)} 下載檔過小，可能只有聲音，請再試一次或換公開影片連結`);
       }
     }
 
